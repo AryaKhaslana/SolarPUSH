@@ -96,3 +96,29 @@ export function formatDistance(meters: number): string {
   if (meters < 1000) return `${meters < 10 ? meters.toFixed(1) : Math.round(meters)} m`;
   return `${(meters / 1000).toFixed(2)} km`;
 }
+
+const COMPASS_LABELS_ID = [
+  "Utara",
+  "Timur Laut",
+  "Timur",
+  "Tenggara",
+  "Selatan",
+  "Barat Daya",
+  "Barat",
+  "Barat Laut",
+] as const;
+
+export function cardinalDirectionId(deg: number): string {
+  const norm = ((deg % 360) + 360) % 360;
+  const idx = Math.round(norm / 45) % 8;
+  return COMPASS_LABELS_ID[idx];
+}
+
+export function formatAgeId(ageSec: number): string {
+  if (ageSec < 5) return "baru saja";
+  if (ageSec < 60) return `${ageSec} dtk lalu`;
+  const mins = Math.floor(ageSec / 60);
+  if (mins < 60) return `${mins} mnt lalu`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs} jam lalu`;
+}

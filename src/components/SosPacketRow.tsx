@@ -3,10 +3,13 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import {
   batteryQuantToPct,
   bearingDegrees,
+  cardinalDirectionId,
+  formatAgeId,
   formatDistance,
   gpsAccuracyBucketLabel,
   haversineMeters,
 } from "@/protocol/geo";
+import type { TriggerType } from "@/protocol/smpv1";
 import type { StoredSosRecord } from "@/storage/packetStore";
 import { COLORS } from "@/theme/tokens";
 
@@ -18,6 +21,13 @@ interface SosPacketRowProps {
   onSelect: (packetId: string) => void;
 }
 
+const TRIGGER_LABELS_ID: Record<TriggerType, string> = {
+  MANUAL: "SOS Manual",
+  SENSOR_SOS: "Deteksi Benturan",
+  DAILY_RADAR: "Ping Radar",
+  WITNESS_PIN: "Tanda Saksi",
+};
+
 export const SosPacketRow = React.memo(function SosPacketRow({
   record,
   selected,
@@ -27,168 +37,146 @@ export const SosPacketRow = React.memo(function SosPacketRow({
 }: SosPacketRowProps) {
   const { packet } = record;
   const dist = haversineMeters(myLat, myLon, packet.latitude, packet.longitude);
-  const brg = Math.round(bearingDegrees(myLat, myLon, packet.latitude, packet.longitude));
+  const brg = bearingDegrees(myLat, myLon, packet.latitude, packet.longitude);
   const battPct = batteryQuantToPct(packet.batteryQuant);
   const ageNowSec =
     packet.ageSec + Math.max(0, Math.floor((Date.now() - record.receivedAtMs) / 1000));
+  const isSos = packet.triggerType !== "DAILY_RADAR";
 
   return (
     <Pressable
       onPress={() => onSelect(record.packetId)}
-      style={[styles.row, selected ? styles.rowSelected : null]}
+      style={[styles.card, selected ? styles.cardSelected : null]}
       accessibilityRole="button"
     >
-      <View style={styles.topLine}>
-        <View style={styles.badgeGroup}>
-          <View
-            style={[
-              styles.badge,
-              packet.triggerType === "DAILY_RADAR" ? styles.badgeSonar : styles.badgeSos,
-            ]}
-          >
-            <Text
-              style={[
-                styles.badgeText,
-                packet.triggerType === "DAILY_RADAR" ? styles.textSonar : styles.textSos,
-              ]}
-            >
-              {packet.triggerType}
-            </Text>
-          </View>
-
-          <View style={[styles.badge, packet.envPocketBag ? styles.badgeAmber : styles.badgeNeutral]}>
-            <Text style={[styles.badgeText, packet.envPocketBag ? styles.textAmber : styles.textMuted]}>
-              {packet.envPocketBag ? "POCKET/BAG" : "OPEN"}
-            </Text>
-          </View>
-
-          {packet.sirenReq ? (
-            <View style={[styles.badge, styles.badgeSos]}>
-              <Text style={[styles.badgeText, styles.textSos]}>SIREN_REQ</Text>
-            </View>
-          ) : null}
-
-          <View style={[styles.badge, styles.badgeNeutral]}>
-            <Text style={[styles.badgeText, styles.textMuted]}>
-              {record.transport.toUpperCase()}
-            </Text>
-          </View>
+      <View style={styles.topRow}>
+        <View style={styles.titleCol}>
+          <Text style={styles.noteText} numberOfLines={1}>
+            {packet.shortPayload || "Sinyal SOS Darurat"}
+          </Text>
+          <Text style={styles.ageSub}>
+            Pengirim {packet.senderHint.slice(0, 4).toUpperCase()} · {formatAgeId(ageNowSec)}
+          </Text>
         </View>
 
-        <Text style={styles.distance}>
-          {formatDistance(dist)} · {brg}°
-        </Text>
+        <View style={styles.distCol}>
+          <Text style={styles.distValue}>{formatDistance(dist)}</Text>
+          <Text style={styles.dirLabel}>{cardinalDirectionId(brg)}</Text>
+        </View>
       </View>
 
-      <View style={styles.midLine}>
-        <Text style={styles.payloadText} numberOfLines={1}>
-          {packet.shortPayload ? `"${packet.shortPayload}"` : "(empty note)"}
-        </Text>
-        <Text style={styles.senderText}>
-          NODE {packet.senderHint.toUpperCase()} · #{packet.seqCounter}
-        </Text>
+      <View style={styles.badgeRow}>
+        <View style={[styles.badge, isSos ? styles.badgeSos : styles.badgeSonar]}>
+          <Text style={[styles.badgeText, isSos ? styles.textSos : styles.textSonar]}>
+            {TRIGGER_LABELS_ID[packet.triggerType]}
+          </Text>
+        </View>
+
+        {packet.envPocketBag ? (
+          <View style={[styles.badge, styles.badgeAmber]}>
+            <Text style={[styles.badgeText, styles.textAmber]}>Di Saku / Tas</Text>
+          </View>
+        ) : null}
+
+        {packet.sirenReq ? (
+          <View style={[styles.badge, styles.badgeSos]}>
+            <Text style={[styles.badgeText, styles.textSos]}>Minta Sirene</Text>
+          </View>
+        ) : null}
+
+        <View style={[styles.badge, styles.badgeNeutral]}>
+          <Text style={[styles.badgeText, styles.textMuted]}>
+            {record.transport === "ultrasonic" ? "Suara 19 kHz" : "BLE"}
+          </Text>
+        </View>
       </View>
 
-      <View style={styles.metaLine}>
+      <View style={styles.bottomRow}>
         <Text style={styles.metaText}>
-          ID {packet.packetId.slice(0, 8)} · TTL {packet.ttl} · AGE {ageNowSec}s
+          Baterai {battPct}% · GPS {gpsAccuracyBucketLabel(packet.gpsAccBucket)} · Sisa hop {packet.ttl}
         </Text>
-        <Text style={styles.metaText}>
-          BATT {battPct}% · GPS {gpsAccuracyBucketLabel(packet.gpsAccBucket)} · {record.rssi} dBm
-        </Text>
+        <Text style={styles.metaText}>{record.rssi} dBm</Text>
       </View>
     </Pressable>
   );
 });
 
 const styles = StyleSheet.create({
-  row: {
+  card: {
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 8,
-    gap: 6,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+    gap: 10,
   },
-  rowSelected: {
+  cardSelected: {
     borderColor: COLORS.sonar,
     backgroundColor: COLORS.surfaceElevated,
   },
-  topLine: {
+  topRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
-    gap: 6,
+    alignItems: "flex-start",
+    gap: 12,
   },
-  badgeGroup: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 4,
+  titleCol: {
     flex: 1,
   },
-  badge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  badgeSos: {
-    backgroundColor: COLORS.sosSoft,
-  },
-  badgeSonar: {
-    backgroundColor: COLORS.sonarSoft,
-  },
-  badgeAmber: {
-    backgroundColor: COLORS.amberSoft,
-  },
-  badgeNeutral: {
-    backgroundColor: COLORS.surfaceElevated,
-  },
-  badgeText: {
-    fontSize: 10,
+  noteText: {
+    color: COLORS.text,
+    fontSize: 15,
     fontWeight: "700",
   },
-  textSos: {
-    color: COLORS.sos,
-  },
-  textSonar: {
-    color: COLORS.sonar,
-  },
-  textAmber: {
-    color: COLORS.amber,
-  },
-  textMuted: {
+  ageSub: {
     color: COLORS.muted,
-  },
-  distance: {
-    color: COLORS.text,
     fontSize: 12,
-    fontWeight: "600",
+    marginTop: 2,
+  },
+  distCol: {
+    alignItems: "flex-end",
+  },
+  distValue: {
+    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: "700",
     fontVariant: ["tabular-nums"],
   },
-  midLine: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 8,
-  },
-  payloadText: {
-    color: COLORS.text,
-    fontSize: 13,
-    fontWeight: "600",
-    flex: 1,
-  },
-  senderText: {
+  dirLabel: {
     color: COLORS.sonar,
     fontSize: 11,
     fontWeight: "600",
-    fontVariant: ["tabular-nums"],
+    marginTop: 1,
   },
-  metaLine: {
+  badgeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  badge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  badgeSos: { backgroundColor: COLORS.sosSoft },
+  badgeSonar: { backgroundColor: COLORS.sonarSoft },
+  badgeAmber: { backgroundColor: COLORS.amberSoft },
+  badgeNeutral: { backgroundColor: COLORS.surfaceElevated },
+  badgeText: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  textSos: { color: COLORS.sos },
+  textSonar: { color: COLORS.sonar },
+  textAmber: { color: COLORS.amber },
+  textMuted: { color: COLORS.muted },
+  bottomRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    flexWrap: "wrap",
-    gap: 4,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.rule,
+    paddingTop: 8,
   },
   metaText: {
     color: COLORS.muted,

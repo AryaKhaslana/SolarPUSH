@@ -41,7 +41,8 @@
           "locationAlwaysAndWhenInUsePermission": "Allow SonarMesh to attach offline GPS coordinates to SOS packets."
         }
       ],
-      "./plugins/withSonarMeshAndroid"
+      "./plugins/withSonarMeshAndroid",
+      "expo-asset"
     ],
     "extra": {
       "repo": "https://github.com/AryaKhaslana/SolarPUSH"

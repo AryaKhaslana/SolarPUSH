@@ -2,8 +2,11 @@ import React from "react";
 import { StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Line, Path, Text as SvgText } from "react-native-svg";
 import {
+  batteryQuantToPct,
   bearingDegrees,
+  cardinalDirectionId,
   estimateDistanceFromRssi,
+  formatAgeId,
   formatDistance,
   haversineMeters,
   relativeBearing,
@@ -20,9 +23,9 @@ interface CompassRadarProps {
   onSelectPacket: (packetId: string) => void;
 }
 
-const SIZE = 224;
+const SIZE = 256;
 const CENTER = SIZE / 2;
-const MAX_R = 88;
+const MAX_R = 100;
 const MAX_RANGE_M = 60;
 
 export const CompassRadar = React.memo(function CompassRadar({
@@ -43,7 +46,7 @@ export const CompassRadar = React.memo(function CompassRadar({
       ? bearingDegrees(myLat, myLon, rec.packet.latitude, rec.packet.longitude)
       : (parseInt(rec.packet.senderHint.slice(0, 2), 16) / 255) * 360;
     const relBrg = relativeBearing(trueBrg, headingDeg);
-    const clampedR = Math.min(MAX_R - 8, Math.max(12, (distM / MAX_RANGE_M) * MAX_R));
+    const clampedR = Math.min(MAX_R - 10, Math.max(16, (distM / MAX_RANGE_M) * MAX_R));
     const rad = ((relBrg - 90) * Math.PI) / 180;
     const x = CENTER + Math.cos(rad) * clampedR;
     const y = CENTER + Math.sin(rad) * clampedR;
@@ -54,52 +57,72 @@ export const CompassRadar = React.memo(function CompassRadar({
     plotted.find((p) => p.rec.packetId === selectedPacketId) ?? plotted[0] ?? null;
 
   const cardinals = [
-    { label: "N", deg: 0 },
-    { label: "E", deg: 90 },
-    { label: "S", deg: 180 },
-    { label: "W", deg: 270 },
+    { label: "U", deg: 0, isNorth: true },
+    { label: "T", deg: 90, isNorth: false },
+    { label: "S", deg: 180, isNorth: false },
+    { label: "B", deg: 270, isNorth: false },
   ];
+
+  const selectedAge = selected
+    ? selected.rec.packet.ageSec +
+      Math.max(0, Math.floor((Date.now() - selected.rec.receivedAtMs) / 1000))
+    : 0;
 
   return (
     <View style={styles.card}>
       <View style={styles.header}>
-        <Text style={styles.title}>Relative Compass Radar</Text>
-        <Text style={styles.monoReadout}>
-          HDG {Math.round(headingDeg).toString().padStart(3, "0")}°
-        </Text>
+        <View>
+          <Text style={styles.title}>Radar Arah Sinyal</Text>
+          <Text style={styles.subtitle}>
+            Menghadap {cardinalDirectionId(headingDeg)} ({Math.round(headingDeg)}°)
+          </Text>
+        </View>
+        <View style={styles.countPill}>
+          <Text style={styles.countPillText}>
+            {records.length} {records.length === 1 ? "sinyal" : "sinyal"}
+          </Text>
+        </View>
       </View>
 
       <View style={styles.svgWrap}>
         <Svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-          {/* Range rings: 20m, 40m, 60m */}
-          <Circle cx={CENTER} cy={CENTER} r={MAX_R} stroke={COLORS.border} strokeWidth={1} fill={COLORS.ground} />
+          {/* Outer radar dial & range rings */}
+          <Circle cx={CENTER} cy={CENTER} r={MAX_R} stroke={COLORS.border} strokeWidth={1.2} fill={COLORS.ground} />
           <Circle cx={CENTER} cy={CENTER} r={MAX_R * 0.66} stroke={COLORS.rule} strokeWidth={1} fill="none" />
           <Circle cx={CENTER} cy={CENTER} r={MAX_R * 0.33} stroke={COLORS.rule} strokeWidth={1} fill="none" />
 
-          {/* Crosshair */}
+          {/* Range labels */}
+          <SvgText x={CENTER + 4} y={CENTER - MAX_R * 0.33 + 11} fill={COLORS.muted} fontSize={9}>
+            20m
+          </SvgText>
+          <SvgText x={CENTER + 4} y={CENTER - MAX_R * 0.66 + 11} fill={COLORS.muted} fontSize={9}>
+            40m
+          </SvgText>
+
+          {/* Axis lines */}
           <Line x1={CENTER} y1={CENTER - MAX_R} x2={CENTER} y2={CENTER + MAX_R} stroke={COLORS.rule} strokeWidth={1} />
           <Line x1={CENTER - MAX_R} y1={CENTER} x2={CENTER + MAX_R} y2={CENTER} stroke={COLORS.rule} strokeWidth={1} />
 
-          {/* Forward phone heading cone */}
+          {/* Forward scan beam */}
           <Path
-            d={`M ${CENTER} ${CENTER} L ${CENTER - 22} ${CENTER - MAX_R + 4} A ${MAX_R} ${MAX_R} 0 0 1 ${CENTER + 22} ${CENTER - MAX_R + 4} Z`}
+            d={`M ${CENTER} ${CENTER} L ${CENTER - 28} ${CENTER - MAX_R + 5} A ${MAX_R} ${MAX_R} 0 0 1 ${CENTER + 28} ${CENTER - MAX_R + 5} Z`}
             fill={COLORS.sonar}
-            fillOpacity={0.09}
+            fillOpacity={0.11}
           />
 
-          {/* Rotating cardinal markers */}
+          {/* Rotating compass cardinals (Utara, Timur, Selatan, Barat) */}
           {cardinals.map((c) => {
             const rel = relativeBearing(c.deg, headingDeg);
             const rad = ((rel - 90) * Math.PI) / 180;
-            const lx = CENTER + Math.cos(rad) * (MAX_R + 13);
-            const ly = CENTER + Math.sin(rad) * (MAX_R + 13) + 4;
+            const lx = CENTER + Math.cos(rad) * (MAX_R + 15);
+            const ly = CENTER + Math.sin(rad) * (MAX_R + 15) + 4;
             return (
               <SvgText
                 key={c.label}
                 x={lx}
                 y={ly}
-                fill={c.label === "N" ? COLORS.sos : COLORS.muted}
-                fontSize={10}
+                fill={c.isNorth ? COLORS.sos : COLORS.muted}
+                fontSize={11}
                 fontWeight="700"
                 textAnchor="middle"
               >
@@ -108,7 +131,7 @@ export const CompassRadar = React.memo(function CompassRadar({
             );
           })}
 
-          {/* Bearing vector to selected node */}
+          {/* Bearing vector line to selected target */}
           {selected ? (
             <Line
               x1={CENTER}
@@ -116,8 +139,8 @@ export const CompassRadar = React.memo(function CompassRadar({
               x2={selected.x}
               y2={selected.y}
               stroke={COLORS.sos}
-              strokeWidth={1.5}
-              strokeDasharray="4,3"
+              strokeWidth={1.6}
+              strokeDasharray="5,3"
             />
           ) : null}
 
@@ -132,7 +155,7 @@ export const CompassRadar = React.memo(function CompassRadar({
                   <Circle
                     cx={pt.x}
                     cy={pt.y}
-                    r={10}
+                    r={13}
                     stroke={dotColor}
                     strokeWidth={1.5}
                     fill={dotColor}
@@ -143,7 +166,7 @@ export const CompassRadar = React.memo(function CompassRadar({
                 <Circle
                   cx={pt.x}
                   cy={pt.y}
-                  r={isSel ? 5 : 4}
+                  r={isSel ? 6 : 4.5}
                   fill={dotColor}
                   onPress={() => onSelectPacket(pt.rec.packetId)}
                 />
@@ -151,24 +174,38 @@ export const CompassRadar = React.memo(function CompassRadar({
             );
           })}
 
-          {/* Center self node */}
-          <Circle cx={CENTER} cy={CENTER} r={4} fill={COLORS.sonar} />
+          {/* Self position center marker */}
+          <Circle cx={CENTER} cy={CENTER} r={5} fill={COLORS.sonar} />
+          <Circle cx={CENTER} cy={CENTER} r={2} fill={COLORS.ground} />
         </Svg>
       </View>
 
-      <View style={styles.footer}>
-        {selected ? (
-          <Text style={styles.footerText} numberOfLines={1}>
-            Target {selected.rec.packet.senderHint.toUpperCase()} ·{" "}
-            {formatDistance(selected.distM)} · BRG {Math.round(selected.trueBrg)}° ·{" "}
-            {selected.rec.rssi} dBm
+      {/* Clear human target readout card */}
+      {selected ? (
+        <View style={styles.targetBox}>
+          <View style={styles.targetLeft}>
+            <Text style={styles.targetDistance}>{formatDistance(selected.distM)}</Text>
+            <Text style={styles.targetDir}>
+              Arah {cardinalDirectionId(selected.trueBrg)} ({Math.round(selected.trueBrg)}°)
+            </Text>
+          </View>
+          <View style={styles.targetRight}>
+            <Text style={styles.targetNote} numberOfLines={1}>
+              {selected.rec.packet.shortPayload || "Sinyal SOS"}
+            </Text>
+            <Text style={styles.targetMeta}>
+              {selected.rec.packet.envPocketBag ? "Di saku/tas" : "Ruang terbuka"} · Baterai{" "}
+              {batteryQuantToPct(selected.rec.packet.batteryQuant)}% · {formatAgeId(selectedAge)}
+            </Text>
+          </View>
+        </View>
+      ) : (
+        <View style={styles.emptyFooter}>
+          <Text style={styles.emptyFooterText}>
+            Belum ada sinyal SOS terdeteksi di sekitar. Arahkan ponsel pelan untuk memindai.
           </Text>
-        ) : (
-          <Text style={styles.footerMuted}>
-            No active SOS nodes plotted yet. Listening on BLE &amp; 18.5-20 kHz.
-          </Text>
-        )}
-      </View>
+        </View>
+      )}
     </View>
   );
 });
@@ -178,21 +215,35 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 12,
+    borderRadius: 14,
+    padding: 16,
   },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 8,
+    marginBottom: 10,
   },
   title: {
     color: COLORS.text,
-    fontSize: 13,
-    fontWeight: "600",
+    fontSize: 15,
+    fontWeight: "700",
   },
-  monoReadout: {
+  subtitle: {
+    color: COLORS.muted,
+    fontSize: 12,
+    marginTop: 2,
+    fontVariant: ["tabular-nums"],
+  },
+  countPill: {
+    backgroundColor: COLORS.surfaceElevated,
+    borderColor: COLORS.border,
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  countPillText: {
     color: COLORS.sonar,
     fontSize: 12,
     fontWeight: "600",
@@ -201,20 +252,60 @@ const styles = StyleSheet.create({
   svgWrap: {
     alignItems: "center",
     justifyContent: "center",
+    paddingVertical: 4,
   },
-  footer: {
-    marginTop: 8,
-    paddingTop: 8,
+  targetBox: {
+    marginTop: 12,
+    backgroundColor: COLORS.surfaceElevated,
+    borderColor: COLORS.border,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  targetLeft: {
+    paddingRight: 12,
+    borderRightWidth: 1,
+    borderRightColor: COLORS.border,
+  },
+  targetDistance: {
+    color: COLORS.text,
+    fontSize: 20,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+  },
+  targetDir: {
+    color: COLORS.sonar,
+    fontSize: 11,
+    fontWeight: "600",
+    marginTop: 2,
+  },
+  targetRight: {
+    flex: 1,
+    gap: 3,
+  },
+  targetNote: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  targetMeta: {
+    color: COLORS.muted,
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  emptyFooter: {
+    marginTop: 10,
+    paddingTop: 10,
     borderTopWidth: 1,
     borderTopColor: COLORS.rule,
   },
-  footerText: {
-    color: COLORS.text,
-    fontSize: 12,
-    fontVariant: ["tabular-nums"],
-  },
-  footerMuted: {
+  emptyFooterText: {
     color: COLORS.muted,
     fontSize: 12,
+    lineHeight: 18,
+    textAlign: "center",
   },
 });

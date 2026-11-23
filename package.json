@@ -16,6 +16,8 @@
   "dependencies": {
     "@expo/metro-runtime": "~5.0.5",
     "expo": "~53.0.9",
+    "expo-asset": "~11.1.7",
+    "expo-file-system": "~18.1.11",
     "expo-location": "~18.1.5",
     "expo-modules-core": "~2.3.12",
     "expo-sqlite": "~15.2.10",

@@ -1,23 +1,23 @@
 /**
- * High-contrast dark tactical OLED palette for SonarMesh.
- * Dark theme is an explicit operational decision for low-power battery preservation
- * and glare-free visibility during power outages and nighttime disaster response.
+ * High-contrast dark OLED emergency instrument palette for SonarMesh.
+ * Designed for low battery drain and clear visibility during power outages.
  */
 export const COLORS = {
-  ground: "#0B0E11",
-  surface: "#12171E",
-  surfaceElevated: "#18202A",
-  border: "#24303F",
-  rule: "#1C2531",
-  text: "#EEF3F8",
-  muted: "#95A4B5",
-  sonar: "#22C3B8",      // Live radar sweep, FSK ultrasonic signal, active monitor
-  sonarSoft: "#0F3132",
-  sos: "#FF7B80",        // Emergency SOS text/border on dark surfaces (6.5:1+ WCAG AA)
-  sosFill: "#C62831",    // High-contrast filled SOS CTA with #FFFFFF text (5.7:1 WCAG AA)
-  sosSoft: "#331216",
-  amber: "#F0A92D",      // Pocket/bag warning, retrying, calibration
-  amberSoft: "#33250E",
-  positive: "#34C77B",   // CRC-16 verified, GPS locked, mesh healthy
+  ground: "#070A0E",
+  surface: "#10161F",
+  surfaceElevated: "#17202C",
+  border: "#223041",
+  rule: "#1A2431",
+  text: "#F2F6FA",
+  muted: "#96A6B8",
+  sonar: "#22C3B8",      // Active radar, ultrasonic signal, live telemetry
+  sonarSoft: "#0E2E30",
+  sos: "#FF7D82",        // Emergency text/indicators on dark surfaces (6.8:1+)
+  sosFill: "#C62831",    // Primary emergency SOS trigger button with #FFFFFF (5.6:1)
+  sosRing: "#5E161C",    // Outer tactile ring around SOS trigger
+  sosSoft: "#311216",
+  amber: "#F0A92D",      // Pocket/bag warning, siren alert, calibration
+  amberSoft: "#33250D",
+  positive: "#34C77B",   // Offline-ready, CRC verified, GPS locked
   positiveSoft: "#103121",
 } as const;

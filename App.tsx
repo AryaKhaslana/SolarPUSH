@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FlatList,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -39,18 +38,28 @@ import { CompassRadar } from "@/components/CompassRadar";
 import { SpectrumAnalyzer } from "@/components/SpectrumAnalyzer";
 import { OfflineCoordinatePlot } from "@/components/OfflineCoordinatePlot";
 import { SosPacketRow } from "@/components/SosPacketRow";
+import {
+  IconLab,
+  IconRadar,
+  IconSiren,
+  IconSosBeacon,
+  IconWave,
+} from "@/components/Icons";
 import { COLORS } from "@/theme/tokens";
 
-type OperatingMode = "RADAR" | "SOS";
-type LowerTab = "feed" | "coords" | "lab";
+type MainTab = "sos" | "radar" | "tools";
+type RadarSubView = "list" | "coords";
+
+const QUICK_NOTES = ["TERJEBAK", "LUKA", "BUTUH AIR", "LT 2"] as const;
 
 export default function App() {
   const [deviceState, setDeviceState] = useState<PersistedDeviceState | null>(null);
   const [records, setRecords] = useState<StoredSosRecord[]>([]);
   const [selectedPacketId, setSelectedPacketId] = useState<string | null>(null);
 
-  const [mode, setMode] = useState<OperatingMode>("RADAR");
-  const [lowerTab, setLowerTab] = useState<LowerTab>("feed");
+  const [mainTab, setMainTab] = useState<MainTab>("sos");
+  const [radarSubView, setRadarSubView] = useState<RadarSubView>("list");
+  const [sosActive, setSosActive] = useState(false);
   const [meshRunning, setMeshRunning] = useState(false);
   const [acousticListening, setAcousticListening] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
@@ -64,26 +73,25 @@ export default function App() {
   const [isPocketBag, setIsPocketBag] = useState(false);
   const [batteryPct] = useState(86);
 
-  const [shortNote, setShortNote] = useState("SOS HERE");
+  const [shortNote, setShortNote] = useState("TERJEBAK");
   const [countdownSec, setCountdownSec] = useState<number | null>(null);
-  const [statusBanner, setStatusBanner] = useState<string | null>(null);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [relayedCount, setRelayedCount] = useState(0);
   const [rejectedCount, setRejectedCount] = useState(0);
 
   const dedupRef = useRef(new PacketDeduplicator(512, SONARMESH_CONSTANTS.DEDUP_WINDOW_MS));
   const deviceStateRef = useRef<PersistedDeviceState | null>(null);
-  const modeRef = useRef<OperatingMode>(mode);
+  const sosActiveRef = useRef<boolean>(sosActive);
   const pocketRef = useRef<boolean>(isPocketBag);
 
   deviceStateRef.current = deviceState;
-  modeRef.current = mode;
+  sosActiveRef.current = sosActive;
   pocketRef.current = isPocketBag;
 
-  const pushBanner = useCallback((msg: string) => {
-    setStatusBanner(msg);
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg);
   }, []);
 
-  // Trigger full SOS broadcast over BLE + Ultrasonic 56-byte SMPv1
   const dispatchSosPacket = useCallback(
     async (
       triggerType: TriggerType,
@@ -132,17 +140,18 @@ export default function App() {
         if (options?.playAcoustic) {
           await sonarMeshBridge.transmitUltrasonic(raw56);
         }
-        pushBanner(
-          `Transmitted 56B SMPv1 (${triggerType}) via ${options?.playAcoustic ? "Ultrasonic + BLE" : "BLE"}.`
+        showToast(
+          options?.playAcoustic
+            ? "Sinyal SOS terkirim lewat Bluetooth & suara 19 kHz."
+            : "Sinyal SOS disiarkan lewat Bluetooth offline."
         );
       } catch (err) {
-        pushBanner(err instanceof Error ? err.message : "Transmission failed.");
+        showToast(err instanceof Error ? err.message : "Gagal mengirim sinyal.");
       }
     },
-    [batteryPct, pushBanner, shortNote]
+    [batteryPct, shortNote, showToast]
   );
 
-  // Boot offline storage, hydrate deduplicator, and wire native/loopback bridge
   useEffect(() => {
     let active = true;
 
@@ -174,7 +183,6 @@ export default function App() {
           const decoded = decodeSmpV1(raw);
           if (!decoded.ok) {
             setRejectedCount((c) => c + 1);
-            pushBanner(`Rejected corrupt packet: ${decoded.message}`);
             return;
           }
           if (!dedupRef.current.acceptIfFresh(decoded.packet)) {
@@ -192,8 +200,8 @@ export default function App() {
           void packetStore.savePacket(record);
           setRecords((prev) => [record, ...prev].slice(0, 120));
           setSelectedPacketId((curr) => curr ?? record.packetId);
+          showToast(`Sinyal baru diterima: "${record.packet.shortPayload || "SOS"}"`);
 
-          // Relay scheduling in JS fallback when TTL > 1
           const relayBytes = prepareRelayPacket(decoded.packet, 1);
           if (relayBytes && !sonarMeshBridge.nativeAvailable) {
             const jitterMs =
@@ -211,37 +219,31 @@ export default function App() {
             setRelayedCount((n) => n + 1);
           }
 
-          // Pocket-aware 3.5 kHz siren trigger (US-004):
-          // Activate if SIREN_REQ=1 or pocketed SOS detects nearby responder RSSI
           const rssiThresh =
             deviceStateRef.current?.settings.pocketProximityRssiDbm ??
             DEFAULT_SONARMESH_SETTINGS.pocketProximityRssiDbm;
           if (
             decoded.packet.sirenReq ||
-            (modeRef.current === "SOS" && pocketRef.current && ev.rssi >= rssiThresh)
+            (sosActiveRef.current && pocketRef.current && ev.rssi >= rssiThresh)
           ) {
             void sonarMeshBridge.startSiren();
             setSirenActive(true);
-            pushBanner("3.5 kHz rescue siren triggered by proximity or SIREN_REQ.");
+            showToast("Penolong terdeteksi dekat. Sirene 3,5 kHz dinyalakan.");
           }
         },
-        onSpectrum: (frame) => {
-          setSpectrum(frame);
-        },
+        onSpectrum: (frame) => setSpectrum(frame),
         onCalibration: (res) => {
           setCalibrating(false);
           setThresholdDb(res.thresholdDb);
-          pushBanner(
-            `Noise calibration complete: floor ${res.noiseFloorDb.toFixed(1)} dB, threshold ${res.thresholdDb.toFixed(1)} dB.`
-          );
+          showToast(`Kalibrasi ruangan selesai (ambang ${res.thresholdDb.toFixed(1)} dB).`);
         },
         onImpact: (ev) => {
           const sec =
             deviceStateRef.current?.settings.sosCountdownSec ??
             DEFAULT_SONARMESH_SETTINGS.sosCountdownSec;
           setCountdownSec((curr) => (curr === null ? sec : curr));
-          pushBanner(
-            `Impact shock detected (${ev.magnitudeMs2.toFixed(1)} m/s^2). Cancel within ${sec}s to abort SOS.`
+          showToast(
+            `Benturan keras terdeteksi (${ev.magnitudeMs2.toFixed(1)} m/s^2). Batalkan dalam ${sec} detik.`
           );
         },
         onSensors: (snap) => {
@@ -250,15 +252,11 @@ export default function App() {
           setIsPocketBag(snap.isPocketBag);
           setHeadingDeg(snap.headingDeg);
         },
-        onError: (msg) => {
-          pushBanner(`Hardware alert: ${msg}`);
-        },
+        onError: (msg) => showToast(msg),
       });
 
       await sonarMeshBridge.startMesh("RADAR", false, st.settings);
-      if (active) {
-        setMeshRunning(true);
-      }
+      if (active) setMeshRunning(true);
     }
 
     void boot();
@@ -266,14 +264,13 @@ export default function App() {
       active = false;
       sonarMeshBridge.detach();
     };
-  }, [pushBanner]);
+  }, [showToast]);
 
-  // Accelerometer impact SOS countdown timer (US-004)
   useEffect(() => {
     if (countdownSec === null) return;
     if (countdownSec <= 0) {
       setCountdownSec(null);
-      setMode("SOS");
+      setSosActive(true);
       void dispatchSosPacket("SENSOR_SOS", { sirenReq: isPocketBag, playAcoustic: true });
       return;
     }
@@ -283,19 +280,20 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [countdownSec, dispatchSosPacket, isPocketBag]);
 
-  const handleModeSwitch = useCallback(
-    async (nextMode: OperatingMode) => {
-      setMode(nextMode);
-      const st = deviceStateRef.current;
-      if (!st) return;
-      await sonarMeshBridge.startMesh(nextMode, nextMode === "SOS", st.settings);
+  const handleToggleSos = useCallback(async () => {
+    const st = deviceStateRef.current;
+    if (!st) return;
+    if (sosActive) {
+      setSosActive(false);
+      await sonarMeshBridge.startMesh("RADAR", false, st.settings);
+      showToast("Siaran SOS dihentikan. Kembali ke mode siaga.");
+    } else {
+      setSosActive(true);
+      await sonarMeshBridge.startMesh("SOS", true, st.settings);
       setMeshRunning(true);
-      if (nextMode === "SOS") {
-        await dispatchSosPacket("MANUAL", { sirenReq: false, playAcoustic: true });
-      }
-    },
-    [dispatchSosPacket]
-  );
+      await dispatchSosPacket("MANUAL", { sirenReq: false, playAcoustic: true });
+    }
+  }, [dispatchSosPacket, showToast, sosActive]);
 
   const handleToggleAcousticListen = useCallback(async () => {
     const st = deviceStateRef.current;
@@ -303,13 +301,13 @@ export default function App() {
     if (acousticListening) {
       await sonarMeshBridge.stopAcousticListen();
       setAcousticListening(false);
-      pushBanner("Microphone capture stopped (battery saved).");
+      showToast("Mikrofon dimatikan untuk menghemat baterai.");
     } else {
       await sonarMeshBridge.startAcousticListen(st.settings);
       setAcousticListening(true);
-      pushBanner("Listening on 18.5-20 kHz via 48 kHz AudioRecord FFT.");
+      showToast("Mendengarkan sinyal ultrasonik 18,5-20 kHz...");
     }
-  }, [acousticListening, pushBanner]);
+  }, [acousticListening, showToast]);
 
   const handleCalibrate = useCallback(async () => {
     const st = deviceStateRef.current;
@@ -319,21 +317,21 @@ export default function App() {
       setAcousticListening(true);
     }
     setCalibrating(true);
-    pushBanner("Measuring ambient room noise floor for 3 seconds...");
+    showToast("Harap tenang 3 detik untuk mengukur kebisingan ruangan...");
     await sonarMeshBridge.calibrateNoiseFloor(SONARMESH_CONSTANTS.CALIBRATION_DURATION_MS);
-  }, [acousticListening, pushBanner]);
+  }, [acousticListening, showToast]);
 
   const handleToggleSiren = useCallback(async () => {
     if (sirenActive) {
       await sonarMeshBridge.stopSiren();
       setSirenActive(false);
-      pushBanner("3.5 kHz siren silenced.");
+      showToast("Sirene 3,5 kHz dimatikan.");
     } else {
       await sonarMeshBridge.startSiren();
       setSirenActive(true);
-      pushBanner("Playing 3.5 kHz rescue siren.");
+      showToast("Sirene darurat 3,5 kHz berbunyi.");
     }
-  }, [pushBanner, sirenActive]);
+  }, [showToast, sirenActive]);
 
   const updateSetting = useCallback(
     <K extends keyof SonarMeshSettings>(key: K, value: SonarMeshSettings[K]) => {
@@ -358,9 +356,11 @@ export default function App() {
 
   const selectedHex = useMemo(() => {
     if (!selectedRecord) return "";
-    return bytesToHex(base64ToBytes(selectedRecord.rawBase64))
-      .match(/.{1,4}/g)
-      ?.join(" ") ?? "";
+    return (
+      bytesToHex(base64ToBytes(selectedRecord.rawBase64))
+        .match(/.{1,4}/g)
+        ?.join(" ") ?? ""
+    );
   }, [selectedRecord]);
 
   const renderPacketItem = useCallback(
@@ -382,140 +382,194 @@ export default function App() {
     <SafeAreaProvider>
       <SafeAreaView style={styles.safeArea}>
         <StatusBar style="light" />
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.container}
-          keyboardShouldPersistTaps="handled"
-        >
-          {/* Top Tactical Header */}
-          <View style={styles.topBar}>
-            <View>
-              <View style={styles.brandRow}>
-                <Text style={styles.brandName}>SonarMesh</Text>
-                <View style={styles.offlineBadge}>
-                  <Text style={styles.offlineBadgeText}>OFFLINE · AIRPLANE READY</Text>
-                </View>
-              </View>
-              <Text style={styles.runtimeSub}>
-                SMPv1 56B · {sonarMeshBridge.runtimeLabel} · Node{" "}
-                {(deviceState?.senderHint ?? "--------").toUpperCase()}
+
+        {/* Clean Top App Bar */}
+        <View style={styles.headerBar}>
+          <View style={styles.brandGroup}>
+            <Text style={styles.brandTitle}>SonarMesh</Text>
+            <View style={[styles.statusPill, meshRunning ? styles.pillGreen : styles.pillMuted]}>
+              <View style={[styles.dot, { backgroundColor: meshRunning ? COLORS.positive : COLORS.muted }]} />
+              <Text style={[styles.statusPillText, { color: meshRunning ? COLORS.positive : COLORS.muted }]}>
+                {meshRunning ? "Offline Siap" : "Siaga"}
               </Text>
             </View>
-
-            {/* Mode Switcher: RADAR / MONITOR vs BEACON / SOS */}
-            <View style={styles.modeSwitch}>
-              <Pressable
-                onPress={() => void handleModeSwitch("RADAR")}
-                style={[styles.modeBtn, mode === "RADAR" ? styles.modeBtnRadar : null]}
-                accessibilityRole="button"
-              >
-                <Text style={[styles.modeBtnText, mode === "RADAR" ? styles.modeBtnTextActive : null]}>
-                  Radar
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => void handleModeSwitch("SOS")}
-                style={[styles.modeBtn, mode === "SOS" ? styles.modeBtnSos : null]}
-                accessibilityRole="button"
-              >
-                <Text style={[styles.modeBtnText, mode === "SOS" ? styles.modeBtnTextSos : null]}>
-                  SOS Beacon
-                </Text>
-              </Pressable>
-            </View>
           </View>
 
-          {/* Status Strip: ENV_STATE, Mesh Service, Relays, Battery */}
-          <View style={styles.statusStrip}>
-            <Text style={styles.stripItem}>
-              ENV: <Text style={isPocketBag ? styles.textAmber : styles.textSonar}>{isPocketBag ? "POCKET/BAG" : "OPEN"}</Text> ({Math.round(lightLux)} lx)
-            </Text>
-            <Text style={styles.stripItem}>
-              MESH: <Text style={meshRunning ? styles.textPos : styles.textMuted}>{meshRunning ? "ACTIVE" : "OFF"}</Text>
-            </Text>
-            <Text style={styles.stripItem}>RELAYED: {relayedCount}</Text>
-            <Text style={styles.stripItem}>BATT: {batteryPct}%</Text>
-          </View>
-
-          {/* Accelerometer Impact Countdown Banner */}
-          {countdownSec !== null ? (
-            <View style={styles.countdownCard}>
-              <View style={styles.countdownCopy}>
-                <Text style={styles.countdownTitle}>
-                  IMPACT DETECTED · AUTO-SOS IN {countdownSec}s
-                </Text>
-                <Text style={styles.countdownSub}>
-                  Cancel immediately if this drop was accidental.
-                </Text>
+          <View style={styles.headerRight}>
+            {isPocketBag ? (
+              <View style={styles.pocketBadge}>
+                <Text style={styles.pocketBadgeText}>Di Saku</Text>
               </View>
-              <Pressable
-                onPress={() => {
-                  setCountdownSec(null);
-                  pushBanner("Impact SOS countdown cancelled.");
-                }}
-                style={styles.cancelCountdownBtn}
-                accessibilityRole="button"
-              >
-                <Text style={styles.cancelCountdownText}>CANCEL COUNTDOWN</Text>
-              </Pressable>
-            </View>
-          ) : null}
+            ) : null}
+            <Text style={styles.battText}>{batteryPct}%</Text>
+          </View>
+        </View>
 
-          {/* Status Notice */}
-          {statusBanner ? (
-            <View style={styles.noticeRow}>
-              <Text style={styles.noticeText}>{statusBanner}</Text>
-              <Pressable onPress={() => setStatusBanner(null)} accessibilityRole="button">
-                <Text style={styles.noticeDismiss}>Dismiss</Text>
-              </Pressable>
+        {/* Global Urgent Banners (Countdown or Active Siren) visible across all tabs */}
+        {countdownSec !== null ? (
+          <View style={styles.urgentBanner}>
+            <View style={styles.urgentTextCol}>
+              <Text style={styles.urgentTitle}>
+                Benturan terdeteksi · SOS dalam {countdownSec} detik
+              </Text>
+              <Text style={styles.urgentSub}>Ketuk batalkan jika ponsel hanya terjatuh biasa.</Text>
             </View>
-          ) : null}
-
-          {/* High-Contrast Primary Controls */}
-          <View style={styles.controlDeck}>
             <Pressable
-              onPress={() =>
-                void (mode === "SOS"
-                  ? handleModeSwitch("RADAR")
-                  : handleModeSwitch("SOS"))
-              }
-              style={[
-                styles.primarySosBtn,
-                mode === "SOS" ? styles.primarySosBtnActive : null,
-              ]}
+              onPress={() => {
+                setCountdownSec(null);
+                showToast("Pengiriman SOS otomatis dibatalkan.");
+              }}
+              style={styles.cancelUrgentBtn}
               accessibilityRole="button"
             >
-              <Text style={styles.primarySosText}>
-                {mode === "SOS" ? "STOP SOS BEACON" : "TRIGGER SOS (BLE + 19kHz)"}
-              </Text>
+              <Text style={styles.cancelUrgentText}>Batalkan</Text>
             </Pressable>
+          </View>
+        ) : null}
 
-            <View style={styles.secondaryControls}>
-              <Pressable
-                onPress={() =>
-                  void dispatchSosPacket("MANUAL", { playAcoustic: true, sirenReq: false })
-                }
-                style={styles.secondaryBtn}
-                accessibilityRole="button"
-              >
-                <Text style={styles.secondaryBtnText}>TX Ultrasonic 56B</Text>
-              </Pressable>
+        {sirenActive ? (
+          <View style={styles.sirenBanner}>
+            <Text style={styles.sirenBannerText}>Sirene Darurat 3,5 kHz Menyala</Text>
+            <Pressable
+              onPress={() => void handleToggleSiren()}
+              style={styles.stopSirenChip}
+              accessibilityRole="button"
+            >
+              <Text style={styles.stopSirenChipText}>Matikan</Text>
+            </Pressable>
+          </View>
+        ) : null}
 
-              <Pressable
-                onPress={() => void handleToggleSiren()}
-                style={[styles.secondaryBtn, sirenActive ? styles.sirenBtnActive : null]}
-                accessibilityRole="button"
-              >
-                <Text style={[styles.secondaryBtnText, sirenActive ? styles.sirenBtnTextActive : null]}>
-                  {sirenActive ? "STOP SIREN (3.5 kHz)" : "Play Siren 3.5 kHz"}
+        {toastMsg ? (
+          <View style={styles.toastRow}>
+            <Text style={styles.toastText}>{toastMsg}</Text>
+            <Pressable onPress={() => setToastMsg(null)} accessibilityRole="button">
+              <Text style={styles.toastClose}>Tutup</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        {/* Main Screen Content */}
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* TAB 1: SOS EMERGENCY HOME (1 clear focus for anyone in panic) */}
+          {mainTab === "sos" ? (
+            <View style={styles.sosScreen}>
+              <View style={styles.heroIntro}>
+                <Text style={styles.heroHeading}>
+                  {sosActive ? "Sinyal SOS Sedang Dipancarkan" : "Bantuan Darurat Tanpa Internet"}
                 </Text>
+                <Text style={styles.heroSub}>
+                  {sosActive
+                    ? "Ponsel menyiarkan lokasi GPS lewat Bluetooth dan gelombang suara 19 kHz."
+                    : "Bekerja 100% di Mode Pesawat lewat Bluetooth dan gelombang suara."}
+                </Text>
+              </View>
+
+              {/* Unmistakable Tactile Circular SOS Button */}
+              <View style={styles.sosCenterWrap}>
+                <View style={[styles.sosOuterRing, sosActive ? styles.sosOuterRingActive : null]}>
+                  <Pressable
+                    onPress={() => void handleToggleSos()}
+                    style={[styles.sosCircleBtn, sosActive ? styles.sosCircleBtnActive : null]}
+                    accessibilityRole="button"
+                    accessibilityLabel={sosActive ? "Hentikan siaran SOS" : "Kirim sinyal SOS darurat"}
+                  >
+                    <Text style={styles.sosCircleTitle}>
+                      {sosActive ? "HENTIKAN" : "SOS"}
+                    </Text>
+                    <Text style={styles.sosCircleSub}>
+                      {sosActive ? "SOS sedang aktif" : "Ketuk untuk kirim"}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+
+              {/* Quick Emergency Message Selector (max 9 bytes) */}
+              <View style={styles.noteCard}>
+                <Text style={styles.cardLabel}>Pesan singkat yang ikut dikirim (maks 9 huruf)</Text>
+                <View style={styles.presetRow}>
+                  {QUICK_NOTES.map((preset) => {
+                    const active = shortNote.trim().toUpperCase() === preset;
+                    return (
+                      <Pressable
+                        key={preset}
+                        onPress={() => setShortNote(preset)}
+                        style={[styles.presetChip, active ? styles.presetChipActive : null]}
+                        accessibilityRole="button"
+                      >
+                        <Text style={[styles.presetText, active ? styles.presetTextActive : null]}>
+                          {preset}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <TextInput
+                  value={shortNote}
+                  onChangeText={setShortNote}
+                  maxLength={9}
+                  placeholder="Ketik pesan pendek..."
+                  placeholderTextColor={COLORS.muted}
+                  style={styles.noteInput}
+                />
+              </View>
+
+              {/* Two Clear Secondary Rescue Controls */}
+              <View style={styles.dualActionRow}>
+                <Pressable
+                  onPress={() => void handleToggleSiren()}
+                  style={[styles.bigToolBtn, sirenActive ? styles.bigToolBtnWarn : null]}
+                  accessibilityRole="button"
+                >
+                  <IconSiren color={sirenActive ? COLORS.amber : COLORS.text} size={20} />
+                  <Text style={[styles.bigToolTitle, sirenActive ? styles.textAmber : null]}>
+                    {sirenActive ? "Matikan Sirene" : "Sirene 3,5 kHz"}
+                  </Text>
+                  <Text style={styles.bigToolSub}>Panggil penolong sekitar</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() =>
+                    void dispatchSosPacket("MANUAL", { playAcoustic: true, sirenReq: false })
+                  }
+                  style={styles.bigToolBtn}
+                  accessibilityRole="button"
+                >
+                  <IconWave color={COLORS.sonar} size={20} />
+                  <Text style={styles.bigToolTitle}>Kirim Ping Suara</Text>
+                  <Text style={styles.bigToolSub}>Gelombang 18,5-20 kHz</Text>
+                </Pressable>
+              </View>
+
+              {/* Compact Bottom Summary Link to Radar */}
+              <Pressable
+                onPress={() => setMainTab("radar")}
+                style={styles.summaryCard}
+                accessibilityRole="button"
+              >
+                <View style={styles.summaryLeft}>
+                  <Text style={styles.summaryTitle}>
+                    {records.length > 0
+                      ? `${records.length} sinyal SOS tersimpan di sekitar`
+                      : "Buka Radar Pencari Korban"}
+                  </Text>
+                  <Text style={styles.summarySub}>
+                    GPS terakhir: {(deviceState?.lastLatitude ?? -7.257472).toFixed(4)},{" "}
+                    {(deviceState?.lastLongitude ?? 112.752088).toFixed(4)}
+                  </Text>
+                </View>
+                <Text style={styles.summaryAction}>Lihat Radar</Text>
               </Pressable>
             </View>
-          </View>
+          ) : null}
 
-          {/* Unified Telemetry Visuals: Relative Compass Radar + 18.5-20 kHz FFT Spectrum */}
-          <View style={styles.telemetryGrid}>
-            <View style={styles.telemetryCol}>
+          {/* TAB 2: UNIFIED RESCUER RADAR + FFT SPECTRUM + OFFLINE COORDS & FEED (US-005) */}
+          {mainTab === "radar" ? (
+            <View style={styles.sectionStack}>
               <CompassRadar
                 headingDeg={headingDeg}
                 myLat={deviceState?.lastLatitude ?? -7.257472}
@@ -524,9 +578,7 @@ export default function App() {
                 selectedPacketId={selectedRecord?.packetId ?? null}
                 onSelectPacket={setSelectedPacketId}
               />
-            </View>
 
-            <View style={styles.telemetryCol}>
               <SpectrumAnalyzer
                 frame={spectrum}
                 listening={acousticListening}
@@ -537,293 +589,346 @@ export default function App() {
                 onToggleListen={() => void handleToggleAcousticListen()}
                 onCalibrate={() => void handleCalibrate()}
               />
-            </View>
-          </View>
 
-          {/* Lower Operational Panel Tabs */}
-          <View style={styles.tabBar}>
-            {(
-              [
-                { id: "feed", label: `SOS Feed (${records.length})` },
-                { id: "coords", label: "Offline Coords" },
-                { id: "lab", label: "Sensors & Lab" },
-              ] as const
-            ).map((t) => {
-              const active = lowerTab === t.id;
-              return (
+              {/* Segmented Toggle: Daftar Sinyal SOS vs Plot Koordinat Offline */}
+              <View style={styles.segmentedBar}>
                 <Pressable
-                  key={t.id}
-                  onPress={() => setLowerTab(t.id)}
-                  style={[styles.tabBtn, active ? styles.tabBtnActive : null]}
+                  onPress={() => setRadarSubView("list")}
+                  style={[styles.segBtn, radarSubView === "list" ? styles.segBtnActive : null]}
                   accessibilityRole="tab"
                 >
-                  <Text style={[styles.tabText, active ? styles.tabTextActive : null]}>
-                    {t.label}
+                  <Text style={[styles.segText, radarSubView === "list" ? styles.segTextActive : null]}>
+                    Daftar Sinyal ({records.length})
                   </Text>
                 </Pressable>
-              );
-            })}
-          </View>
-
-          {/* TAB 1: SOS Packet Feed + 56-Byte Hex Inspector */}
-          {lowerTab === "feed" ? (
-            <View style={styles.panel}>
-              <View style={styles.noteInputRow}>
-                <TextInput
-                  value={shortNote}
-                  onChangeText={setShortNote}
-                  maxLength={9}
-                  placeholder="9B SOS note"
-                  placeholderTextColor={COLORS.muted}
-                  style={styles.noteInput}
-                  accessibilityLabel="Short 9-byte SOS payload"
-                />
                 <Pressable
-                  onPress={() =>
-                    sonarMeshBridge.injectSimulatedInboundPacket(
-                      deviceState?.lastLatitude ?? -7.257472,
-                      deviceState?.lastLongitude ?? 112.752088,
-                      "ble"
-                    )
-                  }
-                  style={styles.smallActionBtn}
-                  accessibilityRole="button"
+                  onPress={() => setRadarSubView("coords")}
+                  style={[styles.segBtn, radarSubView === "coords" ? styles.segBtnActive : null]}
+                  accessibilityRole="tab"
                 >
-                  <Text style={styles.smallActionText}>+ Sim BLE</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() =>
-                    sonarMeshBridge.injectSimulatedInboundPacket(
-                      deviceState?.lastLatitude ?? -7.257472,
-                      deviceState?.lastLongitude ?? 112.752088,
-                      "ultrasonic"
-                    )
-                  }
-                  style={styles.smallActionBtn}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.smallActionText}>+ Sim 19kHz</Text>
+                  <Text style={[styles.segText, radarSubView === "coords" ? styles.segTextActive : null]}>
+                    Koordinat Offline
+                  </Text>
                 </Pressable>
               </View>
 
-              {records.length === 0 ? (
-                <View style={styles.emptyBox}>
-                  <Text style={styles.emptyTitle}>No SOS packets stored offline</Text>
-                  <Text style={styles.emptySub}>
-                    Tap "Trigger SOS", "TX Ultrasonic 56B", or "+ Sim BLE / + Sim 19kHz" to inspect live 56-byte SMPv1 framing and radar plots.
-                  </Text>
-                </View>
+              {radarSubView === "list" ? (
+                records.length === 0 ? (
+                  <View style={styles.emptyCard}>
+                    <Text style={styles.emptyTitle}>Belum ada sinyal masuk</Text>
+                    <Text style={styles.emptySub}>
+                      Aktifkan "Dengar Sinyal Suara" di atas atau gunakan tombol simulasi di tab Alat &amp; Tes untuk mencoba alur penerimaan.
+                    </Text>
+                  </View>
+                ) : (
+                  <FlatList
+                    data={records}
+                    renderItem={renderPacketItem}
+                    keyExtractor={keyExtractor}
+                    scrollEnabled={false}
+                  />
+                )
               ) : (
-                <FlatList
-                  data={records}
-                  renderItem={renderPacketItem}
-                  keyExtractor={keyExtractor}
-                  scrollEnabled={false}
+                <OfflineCoordinatePlot
+                  myLat={deviceState?.lastLatitude ?? -7.257472}
+                  myLon={deviceState?.lastLongitude ?? 112.752088}
+                  myAccuracyM={deviceState?.lastAccuracyM ?? 12}
+                  records={records}
                 />
               )}
-
-              {selectedRecord ? (
-                <View style={styles.hexBox}>
-                  <Text style={styles.hexTitle}>
-                    SMPv1 56-Byte Big-Endian Frame · CRC-16 Verified · Rejected: {rejectedCount}
-                  </Text>
-                  <Text style={styles.hexBody} selectable>
-                    {selectedHex}
-                  </Text>
-                </View>
-              ) : null}
             </View>
           ) : null}
 
-          {/* TAB 2: Offline Coordinate Grid & Distance Table */}
-          {lowerTab === "coords" ? (
-            <View style={styles.panel}>
-              <OfflineCoordinatePlot
-                myLat={deviceState?.lastLatitude ?? -7.257472}
-                myLon={deviceState?.lastLongitude ?? 112.752088}
-                myAccuracyM={deviceState?.lastAccuracyM ?? 12}
-                records={records}
-              />
-            </View>
-          ) : null}
-
-          {/* TAB 3: Sensors, Thresholds, Battery Optimization & Bench Simulator */}
-          {lowerTab === "lab" ? (
-            <View style={styles.panel}>
-              <View style={styles.sensorGrid}>
-                <View style={styles.sensorTile}>
-                  <Text style={styles.sensorLabel}>Accelerometer</Text>
-                  <Text style={styles.sensorValue}>{accelMs2.toFixed(2)} m/s^2</Text>
-                  <Text style={styles.sensorSub}>
-                    Trigger &gt;= {(deviceState?.settings.impactThresholdMs2 ?? 28).toFixed(1)} m/s^2
-                  </Text>
+          {/* TAB 3: SENSORS, CALIBRATION, FIELD SIMULATOR & SMPv1 INSPECTOR */}
+          {mainTab === "tools" ? (
+            <View style={styles.sectionStack}>
+              {/* Live Hardware Sensor Status */}
+              <View style={styles.cardBlock}>
+                <Text style={styles.blockTitle}>Sensor Otomatis Perangkat</Text>
+                <View style={styles.sensorRow}>
+                  <View style={styles.sensorTile}>
+                    <Text style={styles.sensorLabel}>Guncangan</Text>
+                    <Text style={styles.sensorVal}>{accelMs2.toFixed(1)} m/s^2</Text>
+                    <Text style={styles.sensorHint}>
+                      Batas: {(deviceState?.settings.impactThresholdMs2 ?? 28).toFixed(0)} m/s^2
+                    </Text>
+                  </View>
+                  <View style={styles.sensorTile}>
+                    <Text style={styles.sensorLabel}>Cahaya Sekitar</Text>
+                    <Text style={styles.sensorVal}>{lightLux.toFixed(0)} lux</Text>
+                    <Text style={styles.sensorHint}>
+                      {isPocketBag ? "Terdeteksi di saku/tas" : "Ruang terbuka"}
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.sensorTile}>
-                  <Text style={styles.sensorLabel}>Light Sensor</Text>
-                  <Text style={styles.sensorValue}>{lightLux.toFixed(1)} lux</Text>
-                  <Text style={styles.sensorSub}>
-                    Pocket &lt;= {(deviceState?.settings.pocketLuxThreshold ?? 5).toFixed(1)} lux
-                  </Text>
+
+                <View style={styles.settingList}>
+                  <View style={styles.settingRow}>
+                    <Text style={styles.settingLabel}>
+                      Ambang benturan ({(deviceState?.settings.impactThresholdMs2 ?? 28).toFixed(0)} m/s^2)
+                    </Text>
+                    <View style={styles.stepper}>
+                      <Pressable
+                        onPress={() =>
+                          updateSetting(
+                            "impactThresholdMs2",
+                            Math.max(16, (deviceState?.settings.impactThresholdMs2 ?? 28) - 2)
+                          )
+                        }
+                        style={styles.stepBtn}
+                      >
+                        <Text style={styles.stepText}>-</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() =>
+                          updateSetting(
+                            "impactThresholdMs2",
+                            Math.min(48, (deviceState?.settings.impactThresholdMs2 ?? 28) + 2)
+                          )
+                        }
+                        style={styles.stepBtn}
+                      >
+                        <Text style={styles.stepText}>+</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+
+                  <View style={styles.settingRow}>
+                    <Text style={styles.settingLabel}>
+                      Ambang gelap saku ({(deviceState?.settings.pocketLuxThreshold ?? 5).toFixed(0)} lux)
+                    </Text>
+                    <View style={styles.stepper}>
+                      <Pressable
+                        onPress={() =>
+                          updateSetting(
+                            "pocketLuxThreshold",
+                            Math.max(1, (deviceState?.settings.pocketLuxThreshold ?? 5) - 1)
+                          )
+                        }
+                        style={styles.stepBtn}
+                      >
+                        <Text style={styles.stepText}>-</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() =>
+                          updateSetting(
+                            "pocketLuxThreshold",
+                            Math.min(25, (deviceState?.settings.pocketLuxThreshold ?? 5) + 1)
+                          )
+                        }
+                        style={styles.stepBtn}
+                      >
+                        <Text style={styles.stepText}>+</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+
+                  <View style={styles.settingRow}>
+                    <Text style={styles.settingLabel}>
+                      Durasi simbol FSK ({deviceState?.settings.symbolDurationMs ?? 20} ms)
+                    </Text>
+                    <View style={styles.stepper}>
+                      <Pressable
+                        onPress={() =>
+                          updateSetting(
+                            "symbolDurationMs",
+                            Math.max(10, (deviceState?.settings.symbolDurationMs ?? 20) - 5)
+                          )
+                        }
+                        style={styles.stepBtn}
+                      >
+                        <Text style={styles.stepText}>-</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() =>
+                          updateSetting(
+                            "symbolDurationMs",
+                            Math.min(40, (deviceState?.settings.symbolDurationMs ?? 20) + 5)
+                          )
+                        }
+                        style={styles.stepBtn}
+                      >
+                        <Text style={styles.stepText}>+</Text>
+                      </Pressable>
+                    </View>
+                  </View>
                 </View>
-              </View>
-
-              <View style={styles.labActions}>
-                <Pressable
-                  onPress={() => sonarMeshBridge.simulateImpactShock(35.2)}
-                  style={styles.labBtn}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.labBtnText}>Simulate Impact Shock</Text>
-                </Pressable>
-
-                <Pressable
-                  onPress={() => sonarMeshBridge.simulatePocketToggle(!isPocketBag)}
-                  style={styles.labBtn}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.labBtnText}>
-                    {isPocketBag ? "Set Light: OPEN" : "Set Light: POCKET/BAG"}
-                  </Text>
-                </Pressable>
-
-                <Pressable
-                  onPress={() => sonarMeshBridge.simulateCompassShift(35)}
-                  style={styles.labBtn}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.labBtnText}>Rotate Heading +35°</Text>
-                </Pressable>
 
                 <Pressable
                   onPress={() =>
                     void sonarMeshBridge
                       .requestIgnoreBatteryOptimizations()
                       .then((ok) =>
-                        pushBanner(
+                        showToast(
                           ok
-                            ? "Battery optimization already bypassed."
-                            : "Opened Android battery exemption dialog."
+                            ? "Aplikasi sudah bebas dari pembatasan baterai."
+                            : "Membuka pengaturan pengecualian baterai Android."
                         )
                       )
                   }
-                  style={styles.labBtn}
+                  style={styles.outlineBtn}
                   accessibilityRole="button"
                 >
-                  <Text style={styles.labBtnText}>Battery Exemption</Text>
+                  <Text style={styles.outlineBtnText}>
+                    Izinkan Berjalan di Latar Belakang (Baterai)
+                  </Text>
                 </Pressable>
               </View>
 
-              {/* Tunable Protocol & Sensor Constants */}
-              <View style={styles.configCard}>
-                <Text style={styles.configTitle}>FSK &amp; Trigger Calibration Constants</Text>
-
-                <View style={styles.configRow}>
-                  <Text style={styles.configLabel}>
-                    Symbol duration: {deviceState?.settings.symbolDurationMs ?? 20} ms
-                  </Text>
-                  <View style={styles.stepper}>
-                    <Pressable
-                      onPress={() =>
-                        updateSetting(
-                          "symbolDurationMs",
-                          Math.max(10, (deviceState?.settings.symbolDurationMs ?? 20) - 5)
-                        )
-                      }
-                      style={styles.stepBtn}
-                    >
-                      <Text style={styles.stepBtnText}>-</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() =>
-                        updateSetting(
-                          "symbolDurationMs",
-                          Math.min(40, (deviceState?.settings.symbolDurationMs ?? 20) + 5)
-                        )
-                      }
-                      style={styles.stepBtn}
-                    >
-                      <Text style={styles.stepBtnText}>+</Text>
-                    </Pressable>
-                  </View>
-                </View>
-
-                <View style={styles.configRow}>
-                  <Text style={styles.configLabel}>
-                    Impact threshold: {(deviceState?.settings.impactThresholdMs2 ?? 28).toFixed(0)} m/s^2
-                  </Text>
-                  <View style={styles.stepper}>
-                    <Pressable
-                      onPress={() =>
-                        updateSetting(
-                          "impactThresholdMs2",
-                          Math.max(16, (deviceState?.settings.impactThresholdMs2 ?? 28) - 2)
-                        )
-                      }
-                      style={styles.stepBtn}
-                    >
-                      <Text style={styles.stepBtnText}>-</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() =>
-                        updateSetting(
-                          "impactThresholdMs2",
-                          Math.min(48, (deviceState?.settings.impactThresholdMs2 ?? 28) + 2)
-                        )
-                      }
-                      style={styles.stepBtn}
-                    >
-                      <Text style={styles.stepBtnText}>+</Text>
-                    </Pressable>
-                  </View>
-                </View>
-
-                <View style={styles.configRow}>
-                  <Text style={styles.configLabel}>
-                    Pocket darkness: {(deviceState?.settings.pocketLuxThreshold ?? 5).toFixed(0)} lux
-                  </Text>
-                  <View style={styles.stepper}>
-                    <Pressable
-                      onPress={() =>
-                        updateSetting(
-                          "pocketLuxThreshold",
-                          Math.max(1, (deviceState?.settings.pocketLuxThreshold ?? 5) - 1)
-                        )
-                      }
-                      style={styles.stepBtn}
-                    >
-                      <Text style={styles.stepBtnText}>-</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() =>
-                        updateSetting(
-                          "pocketLuxThreshold",
-                          Math.min(25, (deviceState?.settings.pocketLuxThreshold ?? 5) + 1)
-                        )
-                      }
-                      style={styles.stepBtn}
-                    >
-                      <Text style={styles.stepBtnText}>+</Text>
-                    </Pressable>
-                  </View>
+              {/* Simulator & Uji Lapangan */}
+              <View style={styles.cardBlock}>
+                <Text style={styles.blockTitle}>Mode Uji &amp; Simulator</Text>
+                <Text style={styles.blockSub}>
+                  Gunakan tombol ini saat mengetes sensor atau penerimaan sinyal tanpa dua ponsel.
+                </Text>
+                <View style={styles.simGrid}>
+                  <Pressable
+                    onPress={() => sonarMeshBridge.simulateImpactShock(35.2)}
+                    style={styles.simBtn}
+                  >
+                    <Text style={styles.simBtnText}>Tes Benturan</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => sonarMeshBridge.simulatePocketToggle(!isPocketBag)}
+                    style={styles.simBtn}
+                  >
+                    <Text style={styles.simBtnText}>
+                      {isPocketBag ? "Ubah: Terbuka" : "Ubah: Di Saku"}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      sonarMeshBridge.injectSimulatedInboundPacket(
+                        deviceState?.lastLatitude ?? -7.257472,
+                        deviceState?.lastLongitude ?? 112.752088,
+                        "ble"
+                      );
+                      setMainTab("radar");
+                    }}
+                    style={styles.simBtn}
+                  >
+                    <Text style={styles.simBtnText}>Simulasi Sinyal BLE</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => {
+                      sonarMeshBridge.injectSimulatedInboundPacket(
+                        deviceState?.lastLatitude ?? -7.257472,
+                        deviceState?.lastLongitude ?? 112.752088,
+                        "ultrasonic"
+                      );
+                      setMainTab("radar");
+                    }}
+                    style={styles.simBtn}
+                  >
+                    <Text style={styles.simBtnText}>Simulasi 19 kHz</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => sonarMeshBridge.simulateCompassShift(35)}
+                    style={styles.simBtn}
+                  >
+                    <Text style={styles.simBtnText}>Putar Kompas +35°</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={async () => {
+                      await packetStore.clearPackets();
+                      dedupRef.current.clear();
+                      setRecords([]);
+                      setSelectedPacketId(null);
+                      showToast("Riwayat paket lokal dibersihkan.");
+                    }}
+                    style={[styles.simBtn, styles.simBtnDanger]}
+                  >
+                    <Text style={styles.simBtnDangerText}>Hapus Riwayat</Text>
+                  </Pressable>
                 </View>
               </View>
 
-              <Pressable
-                onPress={async () => {
-                  await packetStore.clearPackets();
-                  dedupRef.current.clear();
-                  setRecords([]);
-                  setSelectedPacketId(null);
-                  pushBanner("Cleared local offline SOS storage and deduplication cache.");
-                }}
-                style={styles.clearBtn}
-                accessibilityRole="button"
-              >
-                <Text style={styles.clearBtnText}>Clear Local Packet Cache</Text>
-              </Pressable>
+              {/* Technical SMPv1 Protocol Inspector (cleanly tucked here, not on main SOS screen) */}
+              <View style={styles.cardBlock}>
+                <Text style={styles.blockTitle}>Diagnostik Protokol SMPv1 (56 Byte)</Text>
+                <Text style={styles.blockSub}>
+                  Runtime: {sonarMeshBridge.runtimeLabel} · Node{" "}
+                  {(deviceState?.senderHint ?? "--------").toUpperCase()} · Diteruskan: {relayedCount} · Ditolak: {rejectedCount}
+                </Text>
+                {selectedRecord ? (
+                  <View style={styles.hexBox}>
+                    <Text style={styles.hexLabel}>
+                      Paket terpilih ({selectedRecord.packetId}) · CRC-16 valid
+                    </Text>
+                    <Text style={styles.hexCode} selectable>
+                      {selectedHex}
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={styles.emptyDiag}>Belum ada frame biner untuk diinspeksi.</Text>
+                )}
+              </View>
             </View>
           ) : null}
         </ScrollView>
+
+        {/* Native-Style Fixed Bottom Navigation Bar */}
+        <View style={styles.bottomNav}>
+          <Pressable
+            onPress={() => setMainTab("sos")}
+            style={styles.navItem}
+            accessibilityRole="tab"
+          >
+            <IconSosBeacon
+              color={mainTab === "sos" ? (sosActive ? COLORS.sos : COLORS.sonar) : COLORS.muted}
+              size={22}
+            />
+            <Text
+              style={[
+                styles.navLabel,
+                mainTab === "sos" ? styles.navLabelActive : null,
+              ]}
+            >
+              Darurat
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => setMainTab("radar")}
+            style={styles.navItem}
+            accessibilityRole="tab"
+          >
+            <View style={styles.navIconWrap}>
+              <IconRadar color={mainTab === "radar" ? COLORS.sonar : COLORS.muted} size={22} />
+              {records.length > 0 ? (
+                <View style={styles.navBadge}>
+                  <Text style={styles.navBadgeText}>
+                    {records.length > 9 ? "9+" : records.length}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+            <Text
+              style={[
+                styles.navLabel,
+                mainTab === "radar" ? styles.navLabelActive : null,
+              ]}
+            >
+              Radar
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => setMainTab("tools")}
+            style={styles.navItem}
+            accessibilityRole="tab"
+          >
+            <IconLab color={mainTab === "tools" ? COLORS.sonar : COLORS.muted} size={22} />
+            <Text
+              style={[
+                styles.navLabel,
+                mainTab === "tools" ? styles.navLabelActive : null,
+              ]}
+            >
+              Alat &amp; Tes
+            </Text>
+          </Pressable>
+        </View>
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -834,324 +939,416 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.ground,
   },
-  scroll: {
-    flex: 1,
-  },
-  container: {
-    padding: 14,
-    paddingBottom: 32,
-    maxWidth: 920,
-    width: "100%",
-    alignSelf: "center",
-    gap: 12,
-  },
-  topBar: {
+  headerBar: {
+    height: 54,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.rule,
     flexDirection: "row",
-    flexWrap: "wrap",
+    alignItems: "center",
     justifyContent: "space-between",
+    backgroundColor: COLORS.ground,
+  },
+  brandGroup: {
+    flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
-  brandRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  brandName: {
+  brandTitle: {
     color: COLORS.text,
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "700",
     letterSpacing: -0.3,
   },
-  offlineBadge: {
-    backgroundColor: COLORS.positiveSoft,
-    borderColor: COLORS.positive,
-    borderWidth: 1,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 5,
-  },
-  offlineBadgeText: {
-    color: COLORS.positive,
-    fontSize: 10,
-    fontWeight: "700",
-  },
-  runtimeSub: {
-    color: COLORS.muted,
-    fontSize: 11,
-    marginTop: 2,
-    fontVariant: ["tabular-nums"],
-  },
-  modeSwitch: {
+  statusPill: {
     flexDirection: "row",
-    backgroundColor: COLORS.surface,
-    borderColor: COLORS.border,
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 3,
-    gap: 4,
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 20,
   },
-  modeBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+  pillGreen: { backgroundColor: COLORS.positiveSoft },
+  pillMuted: { backgroundColor: COLORS.surfaceElevated },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusPillText: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  headerRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  pocketBadge: {
+    backgroundColor: COLORS.amberSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: 6,
   },
-  modeBtnRadar: {
-    backgroundColor: COLORS.sonarSoft,
+  pocketBadgeText: {
+    color: COLORS.amber,
+    fontSize: 11,
+    fontWeight: "700",
   },
-  modeBtnSos: {
-    backgroundColor: COLORS.sosSoft,
-  },
-  modeBtnText: {
+  battText: {
     color: COLORS.muted,
     fontSize: 12,
     fontWeight: "600",
-  },
-  modeBtnTextActive: {
-    color: COLORS.sonar,
-  },
-  modeBtnTextSos: {
-    color: COLORS.sos,
-  },
-  statusStrip: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
-    gap: 8,
-    backgroundColor: COLORS.surface,
-    borderColor: COLORS.border,
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  stripItem: {
-    color: COLORS.muted,
-    fontSize: 11,
-    fontWeight: "600",
     fontVariant: ["tabular-nums"],
   },
-  textSonar: { color: COLORS.sonar },
-  textAmber: { color: COLORS.amber },
-  textPos: { color: COLORS.positive },
-  textMuted: { color: COLORS.muted },
-  countdownCard: {
+  urgentBanner: {
     backgroundColor: COLORS.sosSoft,
-    borderColor: COLORS.sos,
-    borderWidth: 1.5,
-    borderRadius: 10,
-    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.sos,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
     alignItems: "center",
-    gap: 10,
+    justifyContent: "space-between",
+    gap: 12,
   },
-  countdownCopy: {
+  urgentTextCol: {
     flex: 1,
-    minWidth: 180,
   },
-  countdownTitle: {
+  urgentTitle: {
     color: COLORS.text,
     fontSize: 14,
     fontWeight: "700",
   },
-  countdownSub: {
+  urgentSub: {
     color: COLORS.muted,
     fontSize: 12,
     marginTop: 2,
   },
-  cancelCountdownBtn: {
+  cancelUrgentBtn: {
     backgroundColor: COLORS.text,
     paddingHorizontal: 14,
     paddingVertical: 9,
-    borderRadius: 6,
+    borderRadius: 8,
   },
-  cancelCountdownText: {
+  cancelUrgentText: {
     color: COLORS.ground,
     fontSize: 12,
     fontWeight: "700",
   },
-  noticeRow: {
+  sirenBanner: {
+    backgroundColor: COLORS.amberSoft,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.amber,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  sirenBannerText: {
+    color: COLORS.amber,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  stopSirenChip: {
+    backgroundColor: COLORS.amber,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 6,
+  },
+  stopSirenChipText: {
+    color: COLORS.ground,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  toastRow: {
     backgroundColor: COLORS.surfaceElevated,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  toastText: {
+    color: COLORS.text,
+    fontSize: 12,
+    flex: 1,
+  },
+  toastClose: {
+    color: COLORS.sonar,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: 16,
+    paddingBottom: 28,
+    maxWidth: 560,
+    width: "100%",
+    alignSelf: "center",
+  },
+  sosScreen: {
+    gap: 18,
+  },
+  heroIntro: {
+    alignItems: "center",
+    paddingHorizontal: 8,
+  },
+  heroHeading: {
+    color: COLORS.text,
+    fontSize: 20,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  heroSub: {
+    color: COLORS.muted,
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: "center",
+    marginTop: 6,
+  },
+  sosCenterWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 6,
+  },
+  sosOuterRing: {
+    width: 196,
+    height: 196,
+    borderRadius: 98,
+    backgroundColor: COLORS.sosRing,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: COLORS.sos,
+  },
+  sosOuterRingActive: {
+    backgroundColor: COLORS.sosSoft,
+    borderWidth: 2,
+    borderColor: COLORS.sos,
+  },
+  sosCircleBtn: {
+    width: 166,
+    height: 166,
+    borderRadius: 83,
+    backgroundColor: COLORS.sosFill,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  sosCircleBtnActive: {
+    backgroundColor: COLORS.surface,
+    borderWidth: 2,
+    borderColor: COLORS.sos,
+  },
+  sosCircleTitle: {
+    color: "#FFFFFF",
+    fontSize: 30,
+    fontWeight: "800",
+    letterSpacing: 1,
+  },
+  sosCircleSub: {
+    color: "#FDECEC",
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 4,
+    textAlign: "center",
+  },
+  noteCard: {
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.border,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    gap: 10,
+  },
+  cardLabel: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  presetRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  presetChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  presetChipActive: {
+    backgroundColor: COLORS.sonarSoft,
+    borderColor: COLORS.sonar,
+  },
+  presetText: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  presetTextActive: {
+    color: COLORS.sonar,
+  },
+  noteInput: {
+    height: 42,
+    backgroundColor: COLORS.ground,
     borderColor: COLORS.border,
     borderWidth: 1,
     borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-  },
-  noticeText: {
     color: COLORS.text,
-    fontSize: 12,
-    flex: 1,
-  },
-  noticeDismiss: {
-    color: COLORS.sonar,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "600",
   },
-  controlDeck: {
-    gap: 8,
-  },
-  primarySosBtn: {
-    backgroundColor: COLORS.sosFill,
-    borderRadius: 10,
-    paddingVertical: 14,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  primarySosBtnActive: {
-    backgroundColor: COLORS.surfaceElevated,
-    borderWidth: 2,
-    borderColor: COLORS.sos,
-  },
-  primarySosText: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "700",
-    letterSpacing: 0.4,
-  },
-  secondaryControls: {
+  dualActionRow: {
     flexDirection: "row",
-    gap: 8,
+    gap: 10,
   },
-  secondaryBtn: {
+  bigToolBtn: {
     flex: 1,
     backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
     borderWidth: 1,
-    borderRadius: 8,
-    paddingVertical: 11,
-    alignItems: "center",
+    borderRadius: 14,
+    padding: 14,
+    gap: 4,
+    minHeight: 92,
+    justifyContent: "center",
   },
-  sirenBtnActive: {
+  bigToolBtnWarn: {
     backgroundColor: COLORS.amberSoft,
     borderColor: COLORS.amber,
   },
-  secondaryBtnText: {
+  bigToolTitle: {
     color: COLORS.text,
-    fontSize: 13,
-    fontWeight: "600",
+    fontSize: 14,
+    fontWeight: "700",
+    marginTop: 4,
   },
-  sirenBtnTextActive: {
+  bigToolSub: {
+    color: COLORS.muted,
+    fontSize: 11,
+  },
+  textAmber: {
     color: COLORS.amber,
   },
-  telemetryGrid: {
-    flexDirection: Platform.OS === "web" ? "row" : "column",
-    flexWrap: "wrap",
-    gap: 12,
-  },
-  telemetryCol: {
-    flex: 1,
-    minWidth: 280,
-  },
-  tabBar: {
+  summaryCard: {
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.border,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
     flexDirection: "row",
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  summaryLeft: {
+    flex: 1,
+    gap: 3,
+  },
+  summaryTitle: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  summarySub: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontVariant: ["tabular-nums"],
+  },
+  summaryAction: {
+    color: COLORS.sonar,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  sectionStack: {
     gap: 14,
   },
-  tabBtn: {
+  segmentedBar: {
+    flexDirection: "row",
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.border,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 4,
+    gap: 4,
+  },
+  segBtn: {
+    flex: 1,
     paddingVertical: 9,
-    borderBottomWidth: 2,
-    borderBottomColor: "transparent",
+    borderRadius: 7,
+    alignItems: "center",
   },
-  tabBtnActive: {
-    borderBottomColor: COLORS.sonar,
+  segBtnActive: {
+    backgroundColor: COLORS.surfaceElevated,
   },
-  tabText: {
+  segText: {
     color: COLORS.muted,
     fontSize: 13,
     fontWeight: "600",
   },
-  tabTextActive: {
+  segTextActive: {
     color: COLORS.text,
   },
-  panel: {
-    gap: 10,
-  },
-  noteInputRow: {
-    flexDirection: "row",
-    gap: 6,
-    alignItems: "center",
-  },
-  noteInput: {
-    flex: 1,
-    height: 36,
+  emptyCard: {
     backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
     borderWidth: 1,
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    color: COLORS.text,
-    fontSize: 13,
-  },
-  smallActionBtn: {
-    height: 36,
-    paddingHorizontal: 10,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.surfaceElevated,
-    justifyContent: "center",
-  },
-  smallActionText: {
-    color: COLORS.sonar,
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  emptyBox: {
-    borderWidth: 1,
-    borderColor: COLORS.border,
     borderStyle: "dashed",
-    borderRadius: 8,
+    borderRadius: 12,
     padding: 20,
     alignItems: "center",
   },
   emptyTitle: {
     color: COLORS.text,
     fontSize: 14,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   emptySub: {
     color: COLORS.muted,
     fontSize: 12,
-    marginTop: 4,
+    lineHeight: 18,
+    marginTop: 6,
     textAlign: "center",
   },
-  hexBox: {
+  cardBlock: {
     backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
     borderWidth: 1,
-    borderRadius: 8,
-    padding: 10,
-    gap: 4,
+    borderRadius: 14,
+    padding: 16,
+    gap: 12,
   },
-  hexTitle: {
+  blockTitle: {
+    color: COLORS.text,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  blockSub: {
     color: COLORS.muted,
-    fontSize: 11,
-    fontWeight: "600",
+    fontSize: 12,
+    lineHeight: 18,
   },
-  hexBody: {
-    color: COLORS.sonar,
-    fontSize: 11,
-    lineHeight: 17,
-    fontVariant: ["tabular-nums"],
-  },
-  sensorGrid: {
+  sensorRow: {
     flexDirection: "row",
     gap: 10,
   },
   sensorTile: {
     flex: 1,
-    backgroundColor: COLORS.surface,
-    borderColor: COLORS.border,
+    backgroundColor: COLORS.ground,
+    borderColor: COLORS.rule,
     borderWidth: 1,
-    borderRadius: 8,
+    borderRadius: 10,
     padding: 12,
   },
   sensorLabel: {
@@ -1159,89 +1356,160 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "600",
   },
-  sensorValue: {
+  sensorVal: {
     color: COLORS.text,
     fontSize: 18,
     fontWeight: "700",
     marginTop: 4,
     fontVariant: ["tabular-nums"],
   },
-  sensorSub: {
+  sensorHint: {
     color: COLORS.muted,
     fontSize: 11,
     marginTop: 2,
   },
-  labActions: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  labBtn: {
-    backgroundColor: COLORS.surfaceElevated,
-    borderColor: COLORS.border,
-    borderWidth: 1,
-    borderRadius: 6,
-    paddingHorizontal: 11,
-    paddingVertical: 8,
-  },
-  labBtnText: {
-    color: COLORS.text,
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  configCard: {
-    backgroundColor: COLORS.surface,
-    borderColor: COLORS.border,
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
+  settingList: {
     gap: 10,
   },
-  configTitle: {
-    color: COLORS.text,
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  configRow: {
+  settingRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
-  configLabel: {
-    color: COLORS.muted,
-    fontSize: 12,
+  settingLabel: {
+    color: COLORS.text,
+    fontSize: 13,
     fontVariant: ["tabular-nums"],
   },
   stepper: {
     flexDirection: "row",
-    gap: 6,
+    gap: 8,
   },
   stepBtn: {
-    width: 30,
-    height: 28,
-    borderRadius: 6,
+    width: 34,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stepText: {
+    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  outlineBtn: {
+    minHeight: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.sonar,
+    backgroundColor: COLORS.sonarSoft,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+  },
+  outlineBtnText: {
+    color: COLORS.sonar,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  simGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  simBtn: {
+    width: "48%",
+    minHeight: 42,
+    borderRadius: 9,
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: COLORS.surfaceElevated,
     alignItems: "center",
     justifyContent: "center",
+    paddingHorizontal: 8,
   },
-  stepBtnText: {
+  simBtnText: {
     color: COLORS.text,
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 12,
+    fontWeight: "600",
   },
-  clearBtn: {
-    borderWidth: 1,
-    borderColor: COLORS.sos,
+  simBtnDanger: {
     backgroundColor: COLORS.sosSoft,
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: "center",
+    borderColor: COLORS.sos,
   },
-  clearBtnText: {
+  simBtnDangerText: {
     color: COLORS.sos,
     fontSize: 12,
     fontWeight: "700",
+  },
+  hexBox: {
+    backgroundColor: COLORS.ground,
+    borderColor: COLORS.rule,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+    gap: 4,
+  },
+  hexLabel: {
+    color: COLORS.positive,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  hexCode: {
+    color: COLORS.muted,
+    fontSize: 11,
+    lineHeight: 17,
+    fontVariant: ["tabular-nums"],
+  },
+  emptyDiag: {
+    color: COLORS.muted,
+    fontSize: 12,
+  },
+  bottomNav: {
+    height: 62,
+    backgroundColor: COLORS.surface,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-around",
+  },
+  navItem: {
+    flex: 1,
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 3,
+  },
+  navIconWrap: {
+    position: "relative",
+  },
+  navBadge: {
+    position: "absolute",
+    top: -4,
+    right: -10,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: COLORS.sosFill,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  navBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  navLabel: {
+    color: COLORS.muted,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  navLabelActive: {
+    color: COLORS.text,
   },
 });
