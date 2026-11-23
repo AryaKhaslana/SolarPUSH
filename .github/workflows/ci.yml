@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ts-and-protocol-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      - name: TypeScript strict check
+        run: npm run typecheck
+      - name: SMPv1 & geodesy unit tests
+        run: npm test
+      - name: Verify Expo web bundle export
+        run: npm run export:web
+
+  android-kotlin-build:
+    runs-on: ubuntu-latest
+    needs: ts-and-protocol-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+      - run: npm ci
+      - name: Prebuild Android native project
+        env:
+          CI: "1"
+        run: npx expo prebuild --platform android
+      - name: Run Kotlin SMPv1 & FFT unit tests
+        working-directory: android
+        run: ./gradlew :sonarmesh-native:testDebugUnitTest
+      - name: Assemble Android Debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug

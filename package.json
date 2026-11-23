@@ -1,0 +1,37 @@
+{
+  "name": "solarpush-sonarmesh",
+  "version": "0.1.0",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "web": "expo start --web",
+    "prebuild:android": "expo prebuild --platform android",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "export:web": "expo export --platform web",
+    "ios": "expo run:ios"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~5.0.5",
+    "expo": "~53.0.9",
+    "expo-location": "~18.1.5",
+    "expo-modules-core": "~2.3.12",
+    "expo-sqlite": "~15.2.10",
+    "expo-status-bar": "~2.2.3",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "react-native": "0.79.2",
+    "react-native-safe-area-context": "5.4.0",
+    "react-native-svg": "15.11.2",
+    "react-native-web": "^0.20.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@expo/config-plugins": "~10.1.1",
+    "@types/react": "~19.0.10",
+    "typescript": "~5.8.3",
+    "vitest": "^3.1.3"
+  }
+}
