@@ -48,7 +48,7 @@ jobs:
         run: ./gradlew :sonarmesh-native:testDebugUnitTest
       - name: Build standalone offline APK (release bundle signed with debug keystore)
         working-directory: android
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease --stacktrace
       - name: Rename standalone APK
         run: cp android/app/build/outputs/apk/release/app-release.apk SonarMesh-offline.apk
       - name: Upload SonarMesh-offline.apk artifact

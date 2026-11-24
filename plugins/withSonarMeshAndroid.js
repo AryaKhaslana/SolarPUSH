@@ -14,7 +14,7 @@ function withSonarMeshAndroid(config) {
     }
     const features = [
       { name: "android.hardware.bluetooth_le", required: "false" },
-      { name: "android.hardware.microphone", required: "true" },
+      { name: "android.hardware.microphone", required: "false" },
       { name: "android.hardware.sensor.accelerometer", required: "false" },
       { name: "android.hardware.sensor.light", required: "false" },
       { name: "android.hardware.sensor.compass", required: "false" },

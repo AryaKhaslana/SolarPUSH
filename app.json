@@ -7,7 +7,7 @@
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "android": {
-      "package": "com.aryakhaslana.sonarmesh",
+      "package": "com.aryakhaslana.solarpush",
       "versionCode": 1,
       "edgeToEdgeEnabled": true,
       "adaptiveIcon": {
