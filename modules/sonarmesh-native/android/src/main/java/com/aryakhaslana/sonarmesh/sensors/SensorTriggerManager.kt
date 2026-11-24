@@ -54,15 +54,26 @@ class SensorTriggerManager(
     onImpact = onImpactDetected
     onTelemetry = onSensorTelemetry
 
-    accelSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-    lightSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
-    rotationSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
-    running = true
+    try {
+      accelSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+      lightSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+      rotationSensor?.let { sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+      running = true
+    } catch (_: Throwable) {
+      try {
+        sensorManager?.unregisterListener(this)
+      } catch (_: Throwable) {
+      }
+      running = false
+    }
   }
 
   fun stop() {
     if (!running) return
-    sensorManager?.unregisterListener(this)
+    try {
+      sensorManager?.unregisterListener(this)
+    } catch (_: Throwable) {
+    }
     running = false
   }
 
@@ -77,10 +88,12 @@ class SensorTriggerManager(
     val now = System.currentTimeMillis()
     when (event.sensor.type) {
       Sensor.TYPE_ACCELEROMETER -> {
+        if (event.values.size < 3) return
         val x = event.values[0]
         val y = event.values[1]
         val z = event.values[2]
         val mag = sqrt(x * x + y * y + z * z)
+        if (mag.isNaN() || mag.isInfinite()) return
         accelMag = mag
 
         if (mag >= config.impactThresholdMs2 && (now - lastImpactEmitMs) > 5000L) {
@@ -90,18 +103,29 @@ class SensorTriggerManager(
       }
 
       Sensor.TYPE_LIGHT -> {
+        if (event.values.isEmpty()) return
         val lux = event.values[0]
+        if (lux.isNaN() || lux.isInfinite()) return
         lightLux = lux
         isPocketBag = lux <= config.pocketLuxThreshold
       }
 
       Sensor.TYPE_ROTATION_VECTOR -> {
-        SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
-        SensorManager.getOrientation(rotMatrix, orientation)
-        val rawDeg = Math.toDegrees(orientation[0].toDouble()).toFloat()
-        val normalized = (rawDeg + 360f) % 360f
-        // Smooth low-pass filter on compass angle
-        headingDeg = normalized
+        if (event.values.size < 3) return
+        try {
+          val vec = if (event.values.size > 4) event.values.copyOf(4) else event.values
+          SensorManager.getRotationMatrixFromVector(rotMatrix, vec)
+          SensorManager.getOrientation(rotMatrix, orientation)
+          val rawDeg = Math.toDegrees(orientation[0].toDouble()).toFloat()
+          if (!rawDeg.isNaN() && !rawDeg.isInfinite()) {
+            val normalized = ((rawDeg % 360f) + 360f) % 360f
+            if (!normalized.isNaN()) {
+              headingDeg = normalized
+            }
+          }
+        } catch (_: Throwable) {
+          return
+        }
       }
     }
 

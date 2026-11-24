@@ -1,6 +1,7 @@
 package com.aryakhaslana.sonarmesh
 
 import com.aryakhaslana.sonarmesh.audio.Radix2FFT
+import com.aryakhaslana.sonarmesh.ble.LegacyBleFragmentCodec
 import com.aryakhaslana.sonarmesh.protocol.PacketDeduplicator
 import com.aryakhaslana.sonarmesh.protocol.SmpV1Codec
 import org.junit.Assert.assertArrayEquals
@@ -101,5 +102,27 @@ class SmpV1CodecTest {
       if (mags[i] > mags[maxBin]) maxBin = i
     }
     assertTrue(kotlin.math.abs(maxBin - expectedBin) <= 1)
+  }
+
+  @Test
+  fun legacyBleFragmentsFit31BytePduAndRoundtripOutOfOrder() {
+    val raw = SmpV1Codec.encode(samplePacket())
+    val fragments = LegacyBleFragmentCodec.split(raw)
+    assertEquals(3, fragments.size)
+    // Max 24B mfg payload guarantees <= 31B legacy PDU even with 3B Flags + 4B AD header
+    for (frag in fragments) {
+      assertTrue("Fragment ${frag.size}B exceeds 24B legacy mfg cap", frag.size <= 24)
+    }
+    assertEquals(22, fragments[0].size)
+    assertEquals(22, fragments[1].size)
+    assertEquals(21, fragments[2].size)
+
+    val reassembler = LegacyBleFragmentCodec.Reassembler()
+    assertNull(reassembler.accept(fragments[2], nowMs = 1000L))
+    assertNull(reassembler.accept(fragments[0], nowMs = 1050L))
+    val reassembled = reassembler.accept(fragments[1], nowMs = 1100L)
+    assertNotNull(reassembled)
+    assertArrayEquals(raw, reassembled)
+    assertTrue(SmpV1Codec.decode(reassembled!!).isSuccess)
   }
 }

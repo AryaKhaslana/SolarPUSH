@@ -28,6 +28,7 @@ export interface PersistedDeviceState {
   lastLatitude: number;
   lastLongitude: number;
   lastAccuracyM: number;
+  onboardingCompleted: boolean;
   settings: SonarMeshSettings;
 }
 
@@ -41,57 +42,140 @@ interface SqliteDbLike {
   getFirstAsync<T>(sql: string, ...params: unknown[]): Promise<T | null>;
 }
 
+function createDefaultDeviceState(): PersistedDeviceState {
+  return {
+    senderHint: randomHex(4),
+    seqCounter: 0,
+    lastLatitude: -7.257472,
+    lastLongitude: 112.752088,
+    lastAccuracyM: 12,
+    onboardingCompleted: false,
+    settings: { ...DEFAULT_SONARMESH_SETTINGS },
+  };
+}
+
+function mergeDeviceState(
+  raw: unknown,
+  fallback: PersistedDeviceState
+): PersistedDeviceState {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return fallback;
+  }
+  const parsed = raw as Partial<PersistedDeviceState>;
+  const rawSettings =
+    parsed.settings && typeof parsed.settings === "object" && !Array.isArray(parsed.settings)
+      ? parsed.settings
+      : {};
+  return {
+    senderHint:
+      typeof parsed.senderHint === "string" && parsed.senderHint.length > 0
+        ? parsed.senderHint
+        : fallback.senderHint,
+    seqCounter:
+      typeof parsed.seqCounter === "number" && Number.isFinite(parsed.seqCounter)
+        ? parsed.seqCounter
+        : fallback.seqCounter,
+    lastLatitude:
+      typeof parsed.lastLatitude === "number" && Number.isFinite(parsed.lastLatitude)
+        ? parsed.lastLatitude
+        : fallback.lastLatitude,
+    lastLongitude:
+      typeof parsed.lastLongitude === "number" && Number.isFinite(parsed.lastLongitude)
+        ? parsed.lastLongitude
+        : fallback.lastLongitude,
+    lastAccuracyM:
+      typeof parsed.lastAccuracyM === "number" && Number.isFinite(parsed.lastAccuracyM)
+        ? parsed.lastAccuracyM
+        : fallback.lastAccuracyM,
+    onboardingCompleted:
+      typeof parsed.onboardingCompleted === "boolean"
+        ? parsed.onboardingCompleted
+        : false,
+    settings: { ...DEFAULT_SONARMESH_SETTINGS, ...rawSettings },
+  };
+}
+
+function getSafeLocalStorage(): Storage | null {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      return window.localStorage;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 /**
- * Local offline storage backed by expo-sqlite on Android and localStorage on Web.
- * Persists decoded SMPv1 packets, deduplication history, last-known GPS fix, and thresholds.
+ * Local offline storage backed by expo-sqlite on Android and localStorage on Web,
+ * with automatic in-memory fallback if native SQLite initialization fails.
+ * Persists decoded SMPv1 packets, deduplication history, onboarding completion,
+ * last-known GPS fix, and thresholds.
  */
-class OfflinePacketStore {
+export class OfflinePacketStore {
   private sqliteDb: SqliteDbLike | null = null;
   private initialized = false;
+  private initPromise: Promise<void> | null = null;
+  private usingMemoryFallback = false;
+  private memoryState: PersistedDeviceState | null = null;
+  private memoryPackets: StoredSosRecord[] = [];
+
+  isUsingMemoryFallback(): boolean {
+    return this.usingMemoryFallback;
+  }
 
   async init(): Promise<void> {
     if (this.initialized) return;
-    if (Platform.OS !== "web") {
-      try {
-        const SQLite = await import("expo-sqlite");
-        const db = (await SQLite.openDatabaseAsync("sonarmesh.db")) as unknown as SqliteDbLike;
-        await db.execAsync(`
-          PRAGMA journal_mode = WAL;
-          CREATE TABLE IF NOT EXISTS sos_packets (
-            packet_id TEXT PRIMARY KEY,
-            sender_hint TEXT NOT NULL,
-            seq_counter INTEGER NOT NULL,
-            raw_base64 TEXT NOT NULL,
-            transport TEXT NOT NULL,
-            rssi INTEGER NOT NULL,
-            snr_db REAL NOT NULL,
-            relayed INTEGER NOT NULL DEFAULT 0,
-            received_at_ms INTEGER NOT NULL
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = (async () => {
+      if (Platform.OS !== "web") {
+        try {
+          const SQLite = await import("expo-sqlite");
+          const db = (await SQLite.openDatabaseAsync("sonarmesh.db")) as unknown as SqliteDbLike;
+          await db.execAsync(`
+            PRAGMA journal_mode = WAL;
+            CREATE TABLE IF NOT EXISTS sos_packets (
+              packet_id TEXT PRIMARY KEY,
+              sender_hint TEXT NOT NULL,
+              seq_counter INTEGER NOT NULL,
+              raw_base64 TEXT NOT NULL,
+              transport TEXT NOT NULL,
+              rssi INTEGER NOT NULL,
+              snr_db REAL NOT NULL,
+              relayed INTEGER NOT NULL DEFAULT 0,
+              received_at_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sos_received ON sos_packets(received_at_ms DESC);
+            CREATE TABLE IF NOT EXISTS kv_state (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
+          `);
+          this.sqliteDb = db;
+          this.usingMemoryFallback = false;
+        } catch (err) {
+          console.warn(
+            "[OfflinePacketStore] SQLite unavailable, using in-memory fallback:",
+            err instanceof Error ? err.message : String(err)
           );
-          CREATE INDEX IF NOT EXISTS idx_sos_received ON sos_packets(received_at_ms DESC);
-          CREATE TABLE IF NOT EXISTS kv_state (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-          );
-        `);
-        this.sqliteDb = db;
-      } catch {
-        this.sqliteDb = null;
+          this.sqliteDb = null;
+          this.usingMemoryFallback = true;
+        }
+      } else if (!getSafeLocalStorage()) {
+        this.usingMemoryFallback = true;
       }
-    }
-    this.initialized = true;
+      this.initialized = true;
+    })().finally(() => {
+      this.initPromise = null;
+    });
+
+    return this.initPromise;
   }
 
   async loadDeviceState(): Promise<PersistedDeviceState> {
     await this.init();
-    const fallback: PersistedDeviceState = {
-      senderHint: randomHex(4),
-      seqCounter: 0,
-      lastLatitude: -7.257472,
-      lastLongitude: 112.752088,
-      lastAccuracyM: 12,
-      settings: { ...DEFAULT_SONARMESH_SETTINGS },
-    };
+    const fallback = createDefaultDeviceState();
 
     try {
       if (this.sqliteDb) {
@@ -99,26 +183,33 @@ class OfflinePacketStore {
           "SELECT value FROM kv_state WHERE key = 'device_state'"
         );
         if (row?.value) {
-          const parsed = JSON.parse(row.value) as Partial<PersistedDeviceState>;
-          return {
-            ...fallback,
-            ...parsed,
-            settings: { ...DEFAULT_SONARMESH_SETTINGS, ...(parsed.settings ?? {}) },
-          };
+          const merged = mergeDeviceState(JSON.parse(row.value), fallback);
+          this.memoryState = merged;
+          return merged;
         }
-      } else if (typeof window !== "undefined" && window.localStorage) {
-        const raw = window.localStorage.getItem(WEB_STATE_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw) as Partial<PersistedDeviceState>;
+      } else {
+        const storage = getSafeLocalStorage();
+        if (storage) {
+          const raw = storage.getItem(WEB_STATE_KEY);
+          if (raw) {
+            const merged = mergeDeviceState(JSON.parse(raw), fallback);
+            this.memoryState = merged;
+            return merged;
+          }
+        } else if (this.memoryState) {
           return {
-            ...fallback,
-            ...parsed,
-            settings: { ...DEFAULT_SONARMESH_SETTINGS, ...(parsed.settings ?? {}) },
+            ...this.memoryState,
+            settings: { ...this.memoryState.settings },
           };
         }
       }
     } catch {
-      // Ignore corrupt storage and use fresh state.
+      if (this.memoryState) {
+        return {
+          ...this.memoryState,
+          settings: { ...this.memoryState.settings },
+        };
+      }
     }
 
     await this.saveDeviceState(fallback);
@@ -127,19 +218,45 @@ class OfflinePacketStore {
 
   async saveDeviceState(state: PersistedDeviceState): Promise<void> {
     await this.init();
-    const serialized = JSON.stringify(state);
+    const normalized = mergeDeviceState(state, createDefaultDeviceState());
+    this.memoryState = normalized;
+    const serialized = JSON.stringify(normalized);
     try {
       if (this.sqliteDb) {
         await this.sqliteDb.runAsync(
           "INSERT OR REPLACE INTO kv_state (key, value) VALUES ('device_state', ?)",
           serialized
         );
-      } else if (typeof window !== "undefined" && window.localStorage) {
-        window.localStorage.setItem(WEB_STATE_KEY, serialized);
+      } else {
+        const storage = getSafeLocalStorage();
+        if (storage) {
+          storage.setItem(WEB_STATE_KEY, serialized);
+        }
       }
     } catch {
-      // Ignore storage failures.
+      this.usingMemoryFallback = true;
     }
+  }
+
+  async setOnboardingCompleted(completed: boolean): Promise<void> {
+    const current = await this.loadDeviceState();
+    await this.saveDeviceState({
+      ...current,
+      onboardingCompleted: completed,
+    });
+  }
+
+  async updateSettings(partial: Partial<SonarMeshSettings>): Promise<PersistedDeviceState> {
+    const current = await this.loadDeviceState();
+    const next: PersistedDeviceState = {
+      ...current,
+      settings: {
+        ...current.settings,
+        ...partial,
+      },
+    };
+    await this.saveDeviceState(next);
+    return next;
   }
 
   async loadPackets(limit = 100): Promise<StoredSosRecord[]> {
@@ -158,38 +275,48 @@ class OfflinePacketStore {
 
         const records: StoredSosRecord[] = [];
         for (const r of rows) {
-          const decoded = decodeSmpV1(base64ToBytes(r.raw_base64));
-          if (decoded.ok) {
-            records.push({
-              packetId: r.packet_id,
-              packet: decoded.packet,
-              rawBase64: r.raw_base64,
-              transport: r.transport,
-              rssi: r.rssi,
-              snrDb: r.snr_db,
-              relayed: r.relayed === 1,
-              receivedAtMs: r.received_at_ms,
-            });
+          try {
+            const decoded = decodeSmpV1(base64ToBytes(r.raw_base64));
+            if (decoded.ok) {
+              records.push({
+                packetId: r.packet_id,
+                packet: decoded.packet,
+                rawBase64: r.raw_base64,
+                transport: r.transport,
+                rssi: r.rssi,
+                snrDb: r.snr_db,
+                relayed: r.relayed === 1,
+                receivedAtMs: r.received_at_ms,
+              });
+            }
+          } catch {
+            // Skip malformed row.
           }
         }
         return records;
       }
 
-      if (typeof window !== "undefined" && window.localStorage) {
-        const raw = window.localStorage.getItem(WEB_PACKETS_KEY);
+      const storage = getSafeLocalStorage();
+      if (storage) {
+        const raw = storage.getItem(WEB_PACKETS_KEY);
         if (raw) {
           const parsed = JSON.parse(raw) as StoredSosRecord[];
           if (Array.isArray(parsed)) return parsed.slice(0, limit);
         }
+      } else {
+        return this.memoryPackets.slice(0, limit);
       }
     } catch {
-      // Ignore read errors.
+      return this.memoryPackets.slice(0, limit);
     }
-    return [];
+    return this.memoryPackets.slice(0, limit);
   }
 
   async savePacket(record: StoredSosRecord): Promise<void> {
     await this.init();
+    if (!this.memoryPackets.some((p) => p.packetId === record.packetId)) {
+      this.memoryPackets = [record, ...this.memoryPackets].slice(0, 150);
+    }
     try {
       if (this.sqliteDb) {
         await this.sqliteDb.runAsync(
@@ -209,24 +336,29 @@ class OfflinePacketStore {
         return;
       }
 
-      if (typeof window !== "undefined" && window.localStorage) {
+      const storage = getSafeLocalStorage();
+      if (storage) {
         const existing = await this.loadPackets(200);
         if (existing.some((p) => p.packetId === record.packetId)) return;
         const next = [record, ...existing].slice(0, 150);
-        window.localStorage.setItem(WEB_PACKETS_KEY, JSON.stringify(next));
+        storage.setItem(WEB_PACKETS_KEY, JSON.stringify(next));
       }
     } catch {
-      // Ignore write failures.
+      this.usingMemoryFallback = true;
     }
   }
 
   async clearPackets(): Promise<void> {
     await this.init();
+    this.memoryPackets = [];
     try {
       if (this.sqliteDb) {
         await this.sqliteDb.runAsync("DELETE FROM sos_packets");
-      } else if (typeof window !== "undefined" && window.localStorage) {
-        window.localStorage.removeItem(WEB_PACKETS_KEY);
+      } else {
+        const storage = getSafeLocalStorage();
+        if (storage) {
+          storage.removeItem(WEB_PACKETS_KEY);
+        }
       }
     } catch {
       // Ignore delete failures.

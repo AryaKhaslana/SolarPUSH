@@ -1,5 +1,8 @@
 import { Platform } from "react-native";
-import { requireOptionalNativeModule, EventEmitter } from "expo-modules-core";
+import {
+  requireOptionalNativeModule,
+  type EventSubscription,
+} from "expo-modules-core";
 
 export interface NativePacketEvent {
   packetBase64: string;
@@ -44,7 +47,36 @@ export interface NativeDeviceTelemetry extends NativeSensorTelemetry {
   sirenPlaying: boolean;
 }
 
-export interface SonarMeshNativeModuleType {
+export interface NativeServiceStateEvent {
+  running: boolean;
+  mode: string;
+}
+
+export interface NativeErrorEvent {
+  source?: string;
+  code?: string;
+  message?: string;
+}
+
+export type SonarMeshNativeEvents = {
+  onPacketReceived: (ev: NativePacketEvent) => void;
+  onSpectrumFrame: (frame: NativeSpectrumFrame) => void;
+  onCalibrationResult: (res: NativeCalibrationResult) => void;
+  onImpactDetected: (ev: NativeImpactEvent) => void;
+  onSensorTelemetry: (snap: NativeSensorTelemetry) => void;
+  onServiceStateChanged: (ev: NativeServiceStateEvent) => void;
+  onNativeError: (ev: NativeErrorEvent) => void;
+};
+
+export interface SonarMeshNativeEventEmitter {
+  addListener<K extends keyof SonarMeshNativeEvents>(
+    eventName: K,
+    listener: SonarMeshNativeEvents[K]
+  ): EventSubscription;
+  removeAllListeners?<K extends keyof SonarMeshNativeEvents>(eventName: K): void;
+}
+
+export interface SonarMeshNativeModuleType extends SonarMeshNativeEventEmitter {
   startMeshService(mode: string, lowLatency: boolean): Promise<{ running: boolean; mode: string }>;
   stopMeshService(): Promise<{ running: boolean }>;
   startAcousticListen(
@@ -59,22 +91,34 @@ export interface SonarMeshNativeModuleType {
   startSiren(): Promise<{ playing: boolean }>;
   stopSiren(): Promise<{ playing: boolean }>;
   updateSensorConfig(impactMs2: number, pocketLux: number): Promise<{ updated: boolean }>;
+  isIgnoringBatteryOptimizations(): Promise<boolean>;
   requestIgnoreBatteryOptimizations(): Promise<{ ignoring: boolean }>;
   getDeviceTelemetry(): Promise<NativeDeviceTelemetry>;
-  addListener?: (eventName: string, listener: (...args: unknown[]) => void) => { remove: () => void };
 }
 
-const nativeMod =
-  Platform.OS === "android"
-    ? requireOptionalNativeModule<SonarMeshNativeModuleType>("SonarMeshNative")
-    : null;
+let nativeMod: SonarMeshNativeModuleType | null = null;
+if (Platform.OS === "android") {
+  try {
+    nativeMod = requireOptionalNativeModule<SonarMeshNativeModuleType>("SonarMeshNative");
+  } catch {
+    nativeMod = null;
+  }
+}
 
 export const isNativeAndroidModuleAvailable = nativeMod !== null;
 
 export const SonarMeshNative = nativeMod;
 
-export function createNativeEventEmitter() {
-  if (!nativeMod) return null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return new EventEmitter(nativeMod as any);
+export function createNativeEventEmitter(): SonarMeshNativeModuleType | null {
+  if (!nativeMod || typeof nativeMod.addListener !== "function") return null;
+  return nativeMod;
+}
+
+export function addNativeListener<K extends keyof SonarMeshNativeEvents>(
+  eventName: K,
+  listener: SonarMeshNativeEvents[K]
+): EventSubscription | null {
+  const emitter = createNativeEventEmitter();
+  if (!emitter) return null;
+  return emitter.addListener(eventName, listener);
 }

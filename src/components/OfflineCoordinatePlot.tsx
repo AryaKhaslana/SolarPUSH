@@ -9,7 +9,7 @@ import {
   haversineMeters,
 } from "@/protocol/geo";
 import type { StoredSosRecord } from "@/storage/packetStore";
-import { COLORS } from "@/theme/tokens";
+import { CARD_SHADOW, COLORS, FONTS } from "@/theme/tokens";
 
 interface OfflineCoordinatePlotProps {
   myLat: number;
@@ -58,10 +58,10 @@ export const OfflineCoordinatePlot = React.memo(function OfflineCoordinatePlot({
 
       <View style={styles.plotBox}>
         <Svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`}>
-          <Line x1={0} y1={CY} x2={W} y2={CY} stroke={COLORS.rule} strokeWidth={1} />
-          <Line x1={CX} y1={0} x2={CX} y2={H} stroke={COLORS.rule} strokeWidth={1} />
-          <Circle cx={CX} cy={CY} r={39} stroke={COLORS.border} strokeWidth={1} fill="none" strokeDasharray="3,3" />
-          <Circle cx={CX} cy={CY} r={78} stroke={COLORS.border} strokeWidth={1} fill="none" strokeDasharray="3,3" />
+          <Line x1={0} y1={CY} x2={W} y2={CY} stroke={COLORS.border} strokeWidth={1} />
+          <Line x1={CX} y1={0} x2={CX} y2={H} stroke={COLORS.border} strokeWidth={1} />
+          <Circle cx={CX} cy={CY} r={39} stroke={COLORS.borderStrong} strokeWidth={1} fill="none" strokeDasharray="3,3" />
+          <Circle cx={CX} cy={CY} r={78} stroke={COLORS.borderStrong} strokeWidth={1} fill="none" strokeDasharray="3,3" />
 
           <SvgText x={CX + 4} y={14} fill={COLORS.muted} fontSize={9}>
             Utara (80m)
@@ -72,7 +72,7 @@ export const OfflineCoordinatePlot = React.memo(function OfflineCoordinatePlot({
 
           {points.map((pt) => (
             <React.Fragment key={pt.rec.packetId}>
-              <Circle cx={pt.x} cy={pt.y} r={5} fill={COLORS.sos} />
+              <Circle cx={pt.x} cy={pt.y} r={5} fill={COLORS.sosFill} />
               <SvgText x={pt.x + 7} y={pt.y + 3} fill={COLORS.text} fontSize={9}>
                 {pt.rec.packet.shortPayload || pt.rec.packet.senderHint.slice(0, 4).toUpperCase()}
               </SvgText>
@@ -80,16 +80,18 @@ export const OfflineCoordinatePlot = React.memo(function OfflineCoordinatePlot({
           ))}
 
           <Circle cx={CX} cy={CY} r={5} fill={COLORS.sonar} />
-          <SvgText x={CX + 8} y={CY + 14} fill={COLORS.sonar} fontSize={9} fontWeight="700">
+          <SvgText x={CX + 8} y={CY + 14} fill={COLORS.sonarDark} fontSize={9} fontWeight="700">
             ANDA
           </SvgText>
         </Svg>
       </View>
 
       {points.length === 0 ? (
-        <Text style={styles.emptyText}>
-          Belum ada koordinat korban yang masuk. Sinyal SOS dengan GPS akan langsung muncul pada grid di atas.
-        </Text>
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyText}>
+            Belum ada koordinat korban yang masuk. Sinyal SOS dengan GPS akan langsung muncul pada grid di atas.
+          </Text>
+        </View>
       ) : (
         <View style={styles.table}>
           {points.map((pt) => (
@@ -126,45 +128,60 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 14,
+    ...CARD_SHADOW,
   },
   fixLabel: {
+    fontFamily: FONTS.sansMedium,
     color: COLORS.muted,
     fontSize: 12,
     fontWeight: "600",
   },
   fixCoords: {
-    color: COLORS.sonar,
-    fontSize: 16,
+    fontFamily: FONTS.mono,
+    color: COLORS.sonarDark,
+    fontSize: 15,
     fontWeight: "700",
     marginTop: 4,
     fontVariant: ["tabular-nums"],
   },
   fixMeta: {
+    fontFamily: FONTS.sans,
     color: COLORS.muted,
     fontSize: 12,
     marginTop: 4,
   },
   plotBox: {
-    backgroundColor: COLORS.ground,
+    backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: 14,
     overflow: "hidden",
+    ...CARD_SHADOW,
+  },
+  emptyCard: {
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.border,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderRadius: 12,
+    padding: 16,
   },
   emptyText: {
+    fontFamily: FONTS.sans,
     color: COLORS.muted,
     fontSize: 12,
     lineHeight: 18,
     textAlign: "center",
-    paddingVertical: 14,
   },
   table: {
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 12,
+    borderRadius: 14,
     overflow: "hidden",
+    backgroundColor: COLORS.surface,
+    ...CARD_SHADOW,
   },
   row: {
     flexDirection: "row",
@@ -186,22 +203,26 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   sender: {
+    fontFamily: FONTS.sansMedium,
     color: COLORS.text,
     fontSize: 13,
     fontWeight: "600",
   },
   coordSmall: {
+    fontFamily: FONTS.mono,
     color: COLORS.muted,
     fontSize: 11,
     fontVariant: ["tabular-nums"],
   },
   distText: {
-    color: COLORS.sonar,
+    fontFamily: FONTS.sansMedium,
+    color: COLORS.sonarDark,
     fontSize: 13,
     fontWeight: "700",
     fontVariant: ["tabular-nums"],
   },
   accSmall: {
+    fontFamily: FONTS.sans,
     color: COLORS.muted,
     fontSize: 11,
   },

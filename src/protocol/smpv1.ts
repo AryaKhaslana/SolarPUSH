@@ -134,8 +134,160 @@ function computeMvpAuthTag128(prefix38: Uint8Array): Uint8Array {
   return out;
 }
 
-const utf8Encoder = new TextEncoder();
-const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
+export function utf8Encode(input: string): Uint8Array {
+  const bytes: number[] = [];
+  for (let i = 0; i < input.length; i++) {
+    const code = input.charCodeAt(i);
+    if (code < 0x80) {
+      bytes.push(code);
+    } else if (code < 0x800) {
+      bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      if (i + 1 < input.length) {
+        const next = input.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          const cp = 0x10000 + (((code - 0xd800) << 10) | (next - 0xdc00));
+          bytes.push(
+            0xf0 | (cp >> 18),
+            0x80 | ((cp >> 12) & 0x3f),
+            0x80 | ((cp >> 6) & 0x3f),
+            0x80 | (cp & 0x3f)
+          );
+          i++;
+          continue;
+        }
+      }
+      // Lone high surrogate -> U+FFFD
+      bytes.push(0xef, 0xbf, 0xbd);
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      // Lone low surrogate -> U+FFFD
+      bytes.push(0xef, 0xbf, 0xbd);
+    } else {
+      bytes.push(
+        0xe0 | (code >> 12),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f)
+      );
+    }
+  }
+  return new Uint8Array(bytes);
+}
+
+export function utf8Decode(bytes: Uint8Array): string {
+  let out = "";
+  let i = 0;
+  const len = bytes.length;
+
+  while (i < len) {
+    const b0 = bytes[i];
+    if (b0 < 0x80) {
+      out += String.fromCharCode(b0);
+      i += 1;
+      continue;
+    }
+
+    if (b0 >= 0xc2 && b0 <= 0xdf) {
+      if (i + 1 < len) {
+        const b1 = bytes[i + 1];
+        if ((b1 & 0xc0) === 0x80) {
+          out += String.fromCharCode(((b0 & 0x1f) << 6) | (b1 & 0x3f));
+          i += 2;
+          continue;
+        }
+      }
+      out += "\uFFFD";
+      i += 1;
+      continue;
+    }
+
+    if (b0 >= 0xe0 && b0 <= 0xef) {
+      if (i + 1 >= len) {
+        out += "\uFFFD";
+        i += 1;
+        continue;
+      }
+      const b1 = bytes[i + 1];
+      const validB1 =
+        (b0 === 0xe0 && b1 >= 0xa0 && b1 <= 0xbf) ||
+        (b0 === 0xed && b1 >= 0x80 && b1 <= 0x9f) ||
+        (b0 !== 0xe0 && b0 !== 0xed && (b1 & 0xc0) === 0x80);
+      if (!validB1) {
+        out += "\uFFFD";
+        i += 1;
+        continue;
+      }
+      if (i + 2 >= len) {
+        out += "\uFFFD";
+        i += 2;
+        continue;
+      }
+      const b2 = bytes[i + 2];
+      if ((b2 & 0xc0) !== 0x80) {
+        out += "\uFFFD";
+        i += 2;
+        continue;
+      }
+      const cp = ((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f);
+      out += String.fromCharCode(cp);
+      i += 3;
+      continue;
+    }
+
+    if (b0 >= 0xf0 && b0 <= 0xf4) {
+      if (i + 1 >= len) {
+        out += "\uFFFD";
+        i += 1;
+        continue;
+      }
+      const b1 = bytes[i + 1];
+      const validB1 =
+        (b0 === 0xf0 && b1 >= 0x90 && b1 <= 0xbf) ||
+        (b0 === 0xf4 && b1 >= 0x80 && b1 <= 0x8f) ||
+        (b0 > 0xf0 && b0 < 0xf4 && (b1 & 0xc0) === 0x80);
+      if (!validB1) {
+        out += "\uFFFD";
+        i += 1;
+        continue;
+      }
+      if (i + 2 >= len) {
+        out += "\uFFFD";
+        i += 2;
+        continue;
+      }
+      const b2 = bytes[i + 2];
+      if ((b2 & 0xc0) !== 0x80) {
+        out += "\uFFFD";
+        i += 2;
+        continue;
+      }
+      if (i + 3 >= len) {
+        out += "\uFFFD";
+        i += 3;
+        continue;
+      }
+      const b3 = bytes[i + 3];
+      if ((b3 & 0xc0) !== 0x80) {
+        out += "\uFFFD";
+        i += 3;
+        continue;
+      }
+      const cp =
+        ((b0 & 0x07) << 18) |
+        ((b1 & 0x3f) << 12) |
+        ((b2 & 0x3f) << 6) |
+        (b3 & 0x3f);
+      const offset = cp - 0x10000;
+      out += String.fromCharCode(0xd800 + (offset >> 10), 0xdc00 + (offset & 0x3ff));
+      i += 4;
+      continue;
+    }
+
+    out += "\uFFFD";
+    i += 1;
+  }
+
+  return out;
+}
 
 function clamp(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, v));
@@ -186,7 +338,7 @@ export function encodeSmpV1(pkt: SmpV1Packet): Uint8Array {
   view.setUint16(27, clamp(Math.round(pkt.powNonce), 0, 65535), false);
 
   // [29..37] SHORT_PAYLOAD (9 bytes UTF-8, zero-padded)
-  const payloadBytes = utf8Encoder.encode(pkt.shortPayload ?? "").slice(0, 9);
+  const payloadBytes = utf8Encode(pkt.shortPayload ?? "").slice(0, 9);
   buf.set(payloadBytes, 29);
 
   // [38..53] AUTH_SIG_128 (16 bytes)
@@ -252,7 +404,7 @@ export function decodeSmpV1(raw: Uint8Array): DecodedSmpV1Result | DecodeSmpV1Er
   const rawPayload = raw.subarray(29, 38);
   const zeroIdx = rawPayload.indexOf(0);
   const trimmedPayload = zeroIdx === -1 ? rawPayload : rawPayload.subarray(0, zeroIdx);
-  const shortPayload = utf8Decoder.decode(trimmedPayload);
+  const shortPayload = utf8Decode(trimmedPayload);
 
   const authSig128Hex = bytesToHex(raw.subarray(38, 54));
 
@@ -305,21 +457,99 @@ export function prepareRelayPacket(pkt: SmpV1Packet, elapsedSec = 1): Uint8Array
   });
 }
 
-export function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+const BASE64_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+const BASE64_LOOKUP = (() => {
+  const table = new Int16Array(128).fill(-1);
+  for (let i = 0; i < BASE64_ALPHABET.length; i++) {
+    table[BASE64_ALPHABET.charCodeAt(i)] = i;
   }
-  return btoa(binary);
+  return table;
+})();
+
+export function bytesToBase64(bytes: Uint8Array): string {
+  if (bytes.length === 0) return "";
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const hasB1 = i + 1 < bytes.length;
+    const hasB2 = i + 2 < bytes.length;
+    const b1 = hasB1 ? bytes[i + 1] : 0;
+    const b2 = hasB2 ? bytes[i + 2] : 0;
+
+    const triplet = (b0 << 16) | (b1 << 8) | b2;
+    out += BASE64_ALPHABET[(triplet >> 18) & 0x3f];
+    out += BASE64_ALPHABET[(triplet >> 12) & 0x3f];
+    out += hasB1 ? BASE64_ALPHABET[(triplet >> 6) & 0x3f] : "=";
+    out += hasB2 ? BASE64_ALPHABET[triplet & 0x3f] : "=";
+  }
+  return out;
 }
 
 export function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    out[i] = binary.charCodeAt(i);
+  const clean = b64.replace(/\s+/g, "");
+  if (clean.length === 0) return new Uint8Array(0);
+  if (clean.length % 4 === 1) {
+    throw new Error("Invalid Base64 string length");
   }
+
+  let padding = 0;
+  let effectiveLen = clean.length;
+  if (clean.endsWith("==")) {
+    if (clean.length % 4 !== 0) throw new Error("Invalid Base64 padding");
+    padding = 2;
+    effectiveLen -= 2;
+  } else if (clean.endsWith("=")) {
+    if (clean.length % 4 !== 0) throw new Error("Invalid Base64 padding");
+    padding = 1;
+    effectiveLen -= 1;
+  } else if (clean.length % 4 === 2) {
+    padding = 2;
+  } else if (clean.length % 4 === 3) {
+    padding = 1;
+  }
+
+  const outLen = Math.floor((effectiveLen + padding) / 4) * 3 - padding;
+  const out = new Uint8Array(outLen);
+
+  let outIdx = 0;
+  let i = 0;
+  while (i + 3 < effectiveLen) {
+    const c0 = decodeBase64Char(clean, i);
+    const c1 = decodeBase64Char(clean, i + 1);
+    const c2 = decodeBase64Char(clean, i + 2);
+    const c3 = decodeBase64Char(clean, i + 3);
+    const triplet = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3;
+    out[outIdx++] = (triplet >> 16) & 0xff;
+    out[outIdx++] = (triplet >> 8) & 0xff;
+    out[outIdx++] = triplet & 0xff;
+    i += 4;
+  }
+
+  const rem = effectiveLen - i;
+  if (rem === 2) {
+    const c0 = decodeBase64Char(clean, i);
+    const c1 = decodeBase64Char(clean, i + 1);
+    out[outIdx++] = ((c0 << 2) | (c1 >> 4)) & 0xff;
+  } else if (rem === 3) {
+    const c0 = decodeBase64Char(clean, i);
+    const c1 = decodeBase64Char(clean, i + 1);
+    const c2 = decodeBase64Char(clean, i + 2);
+    out[outIdx++] = ((c0 << 2) | (c1 >> 4)) & 0xff;
+    out[outIdx++] = (((c1 & 0x0f) << 4) | (c2 >> 2)) & 0xff;
+  }
+
   return out;
+}
+
+function decodeBase64Char(str: string, index: number): number {
+  const code = str.charCodeAt(index);
+  const val = code < 128 ? BASE64_LOOKUP[code] : -1;
+  if (val < 0) {
+    throw new Error(`Invalid Base64 character at index ${index}`);
+  }
+  return val;
 }
 
 /**

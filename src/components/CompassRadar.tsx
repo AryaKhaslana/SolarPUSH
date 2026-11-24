@@ -12,7 +12,7 @@ import {
   relativeBearing,
 } from "@/protocol/geo";
 import type { StoredSosRecord } from "@/storage/packetStore";
-import { COLORS } from "@/theme/tokens";
+import { CARD_SHADOW, COLORS, FONTS } from "@/theme/tokens";
 
 interface CompassRadarProps {
   headingDeg: number;
@@ -23,9 +23,9 @@ interface CompassRadarProps {
   onSelectPacket: (packetId: string) => void;
 }
 
-const SIZE = 256;
+const SIZE = 252;
 const CENTER = SIZE / 2;
-const MAX_R = 100;
+const MAX_R = 98;
 const MAX_RANGE_M = 60;
 
 export const CompassRadar = React.memo(function CompassRadar({
@@ -78,20 +78,17 @@ export const CompassRadar = React.memo(function CompassRadar({
           </Text>
         </View>
         <View style={styles.countPill}>
-          <Text style={styles.countPillText}>
-            {records.length} {records.length === 1 ? "sinyal" : "sinyal"}
-          </Text>
+          <Text style={styles.countPillText}>{records.length} sinyal</Text>
         </View>
       </View>
 
       <View style={styles.svgWrap}>
         <Svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}>
-          {/* Outer radar dial & range rings */}
-          <Circle cx={CENTER} cy={CENTER} r={MAX_R} stroke={COLORS.border} strokeWidth={1.2} fill={COLORS.ground} />
-          <Circle cx={CENTER} cy={CENTER} r={MAX_R * 0.66} stroke={COLORS.rule} strokeWidth={1} fill="none" />
-          <Circle cx={CENTER} cy={CENTER} r={MAX_R * 0.33} stroke={COLORS.rule} strokeWidth={1} fill="none" />
+          {/* Soft light radar dial */}
+          <Circle cx={CENTER} cy={CENTER} r={MAX_R} stroke={COLORS.borderStrong} strokeWidth={1.2} fill={COLORS.ground} />
+          <Circle cx={CENTER} cy={CENTER} r={MAX_R * 0.66} stroke={COLORS.border} strokeWidth={1} fill="none" />
+          <Circle cx={CENTER} cy={CENTER} r={MAX_R * 0.33} stroke={COLORS.border} strokeWidth={1} fill="none" />
 
-          {/* Range labels */}
           <SvgText x={CENTER + 4} y={CENTER - MAX_R * 0.33 + 11} fill={COLORS.muted} fontSize={9}>
             20m
           </SvgText>
@@ -99,18 +96,17 @@ export const CompassRadar = React.memo(function CompassRadar({
             40m
           </SvgText>
 
-          {/* Axis lines */}
-          <Line x1={CENTER} y1={CENTER - MAX_R} x2={CENTER} y2={CENTER + MAX_R} stroke={COLORS.rule} strokeWidth={1} />
-          <Line x1={CENTER - MAX_R} y1={CENTER} x2={CENTER + MAX_R} y2={CENTER} stroke={COLORS.rule} strokeWidth={1} />
+          <Line x1={CENTER} y1={CENTER - MAX_R} x2={CENTER} y2={CENTER + MAX_R} stroke={COLORS.border} strokeWidth={1} />
+          <Line x1={CENTER - MAX_R} y1={CENTER} x2={CENTER + MAX_R} y2={CENTER} stroke={COLORS.border} strokeWidth={1} />
 
           {/* Forward scan beam */}
           <Path
             d={`M ${CENTER} ${CENTER} L ${CENTER - 28} ${CENTER - MAX_R + 5} A ${MAX_R} ${MAX_R} 0 0 1 ${CENTER + 28} ${CENTER - MAX_R + 5} Z`}
             fill={COLORS.sonar}
-            fillOpacity={0.11}
+            fillOpacity={0.12}
           />
 
-          {/* Rotating compass cardinals (Utara, Timur, Selatan, Barat) */}
+          {/* Rotating compass cardinals */}
           {cardinals.map((c) => {
             const rel = relativeBearing(c.deg, headingDeg);
             const rad = ((rel - 90) * Math.PI) / 180;
@@ -121,7 +117,7 @@ export const CompassRadar = React.memo(function CompassRadar({
                 key={c.label}
                 x={lx}
                 y={ly}
-                fill={c.isNorth ? COLORS.sos : COLORS.muted}
+                fill={c.isNorth ? COLORS.sosFill : COLORS.muted}
                 fontSize={11}
                 fontWeight="700"
                 textAnchor="middle"
@@ -131,24 +127,22 @@ export const CompassRadar = React.memo(function CompassRadar({
             );
           })}
 
-          {/* Bearing vector line to selected target */}
           {selected ? (
             <Line
               x1={CENTER}
               y1={CENTER}
               x2={selected.x}
               y2={selected.y}
-              stroke={COLORS.sos}
+              stroke={COLORS.sosFill}
               strokeWidth={1.6}
               strokeDasharray="5,3"
             />
           ) : null}
 
-          {/* Plotted SOS targets */}
           {plotted.map((pt) => {
             const isSel = selected?.rec.packetId === pt.rec.packetId;
             const dotColor =
-              pt.rec.packet.triggerType === "DAILY_RADAR" ? COLORS.sonar : COLORS.sos;
+              pt.rec.packet.triggerType === "DAILY_RADAR" ? COLORS.sonar : COLORS.sosFill;
             return (
               <React.Fragment key={pt.rec.packetId}>
                 {isSel ? (
@@ -159,7 +153,7 @@ export const CompassRadar = React.memo(function CompassRadar({
                     stroke={dotColor}
                     strokeWidth={1.5}
                     fill={dotColor}
-                    fillOpacity={0.18}
+                    fillOpacity={0.14}
                     onPress={() => onSelectPacket(pt.rec.packetId)}
                   />
                 ) : null}
@@ -174,19 +168,17 @@ export const CompassRadar = React.memo(function CompassRadar({
             );
           })}
 
-          {/* Self position center marker */}
-          <Circle cx={CENTER} cy={CENTER} r={5} fill={COLORS.sonar} />
-          <Circle cx={CENTER} cy={CENTER} r={2} fill={COLORS.ground} />
+          <Circle cx={CENTER} cy={CENTER} r={5.5} fill={COLORS.sonar} />
+          <Circle cx={CENTER} cy={CENTER} r={2} fill={COLORS.white} />
         </Svg>
       </View>
 
-      {/* Clear human target readout card */}
       {selected ? (
         <View style={styles.targetBox}>
           <View style={styles.targetLeft}>
             <Text style={styles.targetDistance}>{formatDistance(selected.distM)}</Text>
             <Text style={styles.targetDir}>
-              Arah {cardinalDirectionId(selected.trueBrg)} ({Math.round(selected.trueBrg)}°)
+              {cardinalDirectionId(selected.trueBrg)} · {Math.round(selected.trueBrg)}°
             </Text>
           </View>
           <View style={styles.targetRight}>
@@ -215,36 +207,40 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
     borderWidth: 1,
-    borderRadius: 14,
+    borderRadius: 16,
     padding: 16,
+    ...CARD_SHADOW,
   },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 10,
+    marginBottom: 8,
   },
   title: {
+    fontFamily: FONTS.sansMedium,
     color: COLORS.text,
     fontSize: 15,
     fontWeight: "700",
   },
   subtitle: {
+    fontFamily: FONTS.sans,
     color: COLORS.muted,
     fontSize: 12,
     marginTop: 2,
     fontVariant: ["tabular-nums"],
   },
   countPill: {
-    backgroundColor: COLORS.surfaceElevated,
-    borderColor: COLORS.border,
+    backgroundColor: COLORS.sonarSoft,
+    borderColor: COLORS.sonarBorder,
     borderWidth: 1,
     borderRadius: 20,
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
   countPillText: {
-    color: COLORS.sonar,
+    fontFamily: FONTS.sansMedium,
+    color: COLORS.sonarDark,
     fontSize: 12,
     fontWeight: "600",
     fontVariant: ["tabular-nums"],
@@ -256,10 +252,10 @@ const styles = StyleSheet.create({
   },
   targetBox: {
     marginTop: 12,
-    backgroundColor: COLORS.surfaceElevated,
+    backgroundColor: COLORS.surfaceSubtle,
     borderColor: COLORS.border,
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: 12,
     padding: 12,
     flexDirection: "row",
     alignItems: "center",
@@ -268,16 +264,18 @@ const styles = StyleSheet.create({
   targetLeft: {
     paddingRight: 12,
     borderRightWidth: 1,
-    borderRightColor: COLORS.border,
+    borderRightColor: COLORS.borderStrong,
   },
   targetDistance: {
+    fontFamily: FONTS.sansMedium,
     color: COLORS.text,
     fontSize: 20,
     fontWeight: "700",
     fontVariant: ["tabular-nums"],
   },
   targetDir: {
-    color: COLORS.sonar,
+    fontFamily: FONTS.sansMedium,
+    color: COLORS.sonarDark,
     fontSize: 11,
     fontWeight: "600",
     marginTop: 2,
@@ -287,11 +285,13 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   targetNote: {
+    fontFamily: FONTS.sansMedium,
     color: COLORS.text,
     fontSize: 14,
     fontWeight: "700",
   },
   targetMeta: {
+    fontFamily: FONTS.sans,
     color: COLORS.muted,
     fontSize: 11,
     lineHeight: 16,
@@ -303,6 +303,7 @@ const styles = StyleSheet.create({
     borderTopColor: COLORS.rule,
   },
   emptyFooterText: {
+    fontFamily: FONTS.sans,
     color: COLORS.muted,
     fontSize: 12,
     lineHeight: 18,

@@ -3,12 +3,13 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Line, Rect, Text as SvgText } from "react-native-svg";
 import type { NativeSpectrumFrame } from "sonarmesh-native";
 import { IconMic } from "@/components/Icons";
-import { COLORS } from "@/theme/tokens";
+import { CARD_SHADOW, COLORS, FONTS } from "@/theme/tokens";
 
 interface SpectrumAnalyzerProps {
   frame: NativeSpectrumFrame | null;
   listening: boolean;
   calibrating: boolean;
+  micPermissionGranted: boolean;
   freqSpace0Hz: number;
   freqMark1Hz: number;
   thresholdDb: number;
@@ -37,6 +38,7 @@ export const SpectrumAnalyzer = React.memo(function SpectrumAnalyzer({
   frame,
   listening,
   calibrating,
+  micPermissionGranted,
   freqSpace0Hz,
   freqMark1Hz,
   thresholdDb,
@@ -63,9 +65,11 @@ export const SpectrumAnalyzer = React.memo(function SpectrumAnalyzer({
         <View style={styles.titleCol}>
           <Text style={styles.title}>Spektrum Ultrasonik (18,5-20 kHz)</Text>
           <Text style={styles.subtitle}>
-            {listening
-              ? `Aktif · Puncak ${( (frame?.peakFreqHz ?? 0) / 1000 ).toFixed(2)} kHz · SNR ${(frame?.snrDb ?? 0).toFixed(1)} dB`
-              : "Mikrofon siaga untuk hemat baterai"}
+            {!micPermissionGranted
+              ? "Izin mikrofon diperlukan untuk menangkap sinyal suara"
+              : listening
+                ? `Aktif · Puncak ${((frame?.peakFreqHz ?? 0) / 1000).toFixed(2)} kHz · SNR ${(frame?.snrDb ?? 0).toFixed(1)} dB`
+                : "Mikrofon siaga agar baterai tetap awet"}
           </Text>
         </View>
       </View>
@@ -76,7 +80,7 @@ export const SpectrumAnalyzer = React.memo(function SpectrumAnalyzer({
             const y = dbToY(db);
             return (
               <React.Fragment key={db}>
-                <Line x1={PAD_L} y1={y} x2={W - PAD_R} y2={y} stroke={COLORS.rule} strokeWidth={1} />
+                <Line x1={PAD_L} y1={y} x2={W - PAD_R} y2={y} stroke={COLORS.border} strokeWidth={1} />
                 <SvgText x={PAD_L - 4} y={y + 3} fill={COLORS.muted} fontSize={9} textAnchor="end">
                   {db}
                 </SvgText>
@@ -84,10 +88,10 @@ export const SpectrumAnalyzer = React.memo(function SpectrumAnalyzer({
             );
           })}
 
-          <Line x1={spaceX} y1={PAD_T} x2={spaceX} y2={PAD_T + PLOT_H} stroke={COLORS.amber} strokeWidth={1} strokeDasharray="3,3" />
+          <Line x1={spaceX} y1={PAD_T} x2={spaceX} y2={PAD_T + PLOT_H} stroke={COLORS.amberFill} strokeWidth={1} strokeDasharray="3,3" />
           <Line x1={markX} y1={PAD_T} x2={markX} y2={PAD_T + PLOT_H} stroke={COLORS.sonar} strokeWidth={1} strokeDasharray="3,3" />
           <Line x1={PAD_L} y1={floorY} x2={W - PAD_R} y2={floorY} stroke={COLORS.muted} strokeWidth={1} strokeDasharray="2,3" />
-          <Line x1={PAD_L} y1={threshY} x2={W - PAD_R} y2={threshY} stroke={COLORS.sos} strokeWidth={1} strokeDasharray="4,2" />
+          <Line x1={PAD_L} y1={threshY} x2={W - PAD_R} y2={threshY} stroke={COLORS.sosFill} strokeWidth={1} strokeDasharray="4,2" />
 
           {bins.map((db, idx) => {
             const y = dbToY(db);
@@ -102,7 +106,7 @@ export const SpectrumAnalyzer = React.memo(function SpectrumAnalyzer({
                 width={barW}
                 height={h}
                 rx={1.5}
-                fill={aboveThresh ? COLORS.sonar : "#24374A"}
+                fill={aboveThresh ? COLORS.sonar : "#CBD5E1"}
               />
             );
           })}
@@ -113,7 +117,7 @@ export const SpectrumAnalyzer = React.memo(function SpectrumAnalyzer({
           <SvgText x={spaceX} y={H - 6} fill={COLORS.amber} fontSize={9} textAnchor="middle">
             {(freqSpace0Hz / 1000).toFixed(2)}k
           </SvgText>
-          <SvgText x={markX} y={H - 6} fill={COLORS.sonar} fontSize={9} textAnchor="middle">
+          <SvgText x={markX} y={H - 6} fill={COLORS.sonarDark} fontSize={9} textAnchor="middle">
             {(freqMark1Hz / 1000).toFixed(2)}k
           </SvgText>
           <SvgText x={W - PAD_R} y={H - 6} fill={COLORS.muted} fontSize={9} textAnchor="end">
@@ -128,7 +132,7 @@ export const SpectrumAnalyzer = React.memo(function SpectrumAnalyzer({
           style={[styles.actionBtn, listening ? styles.actionBtnActive : null]}
           accessibilityRole="button"
         >
-          <IconMic color={listening ? COLORS.sonar : COLORS.text} size={15} />
+          <IconMic color={listening ? COLORS.sonarDark : COLORS.text} size={15} />
           <Text style={[styles.actionText, listening ? styles.actionTextActive : null]}>
             {listening ? "Matikan Mic" : "Dengar Sinyal Suara"}
           </Text>
@@ -154,9 +158,10 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderColor: COLORS.border,
     borderWidth: 1,
-    borderRadius: 14,
+    borderRadius: 16,
     padding: 16,
     gap: 10,
+    ...CARD_SHADOW,
   },
   header: {
     flexDirection: "row",
@@ -167,11 +172,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   title: {
+    fontFamily: FONTS.sansMedium,
     color: COLORS.text,
     fontSize: 15,
     fontWeight: "700",
   },
   subtitle: {
+    fontFamily: FONTS.sans,
     color: COLORS.muted,
     fontSize: 12,
     marginTop: 2,
@@ -179,9 +186,9 @@ const styles = StyleSheet.create({
   },
   svgBox: {
     backgroundColor: COLORS.ground,
-    borderRadius: 8,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: COLORS.rule,
+    borderColor: COLORS.border,
     overflow: "hidden",
   },
   btnRow: {
@@ -191,10 +198,10 @@ const styles = StyleSheet.create({
   actionBtn: {
     flex: 1,
     minHeight: 42,
-    borderRadius: 8,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.surfaceElevated,
+    borderColor: COLORS.borderStrong,
+    backgroundColor: COLORS.surfaceSubtle,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -202,20 +209,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   actionBtnActive: {
-    borderColor: COLORS.sonar,
+    borderColor: COLORS.sonarBorder,
     backgroundColor: COLORS.sonarSoft,
   },
   actionBtnWarn: {
-    borderColor: COLORS.amber,
+    borderColor: COLORS.amberBorder,
     backgroundColor: COLORS.amberSoft,
   },
   actionText: {
+    fontFamily: FONTS.sansMedium,
     color: COLORS.text,
     fontSize: 12,
     fontWeight: "600",
   },
   actionTextActive: {
-    color: COLORS.sonar,
+    color: COLORS.sonarDark,
   },
   actionTextWarn: {
     color: COLORS.amber,

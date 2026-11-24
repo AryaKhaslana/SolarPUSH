@@ -1,18 +1,23 @@
 package com.aryakhaslana.sonarmesh.audio
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import androidx.core.content.ContextCompat
 import com.aryakhaslana.sonarmesh.protocol.SmpV1Codec
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.PI
@@ -51,7 +56,11 @@ class UltrasonicModem(
   private val context: Context,
   @Volatile var config: UltrasonicConfig = UltrasonicConfig(),
 ) {
-  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+  @Volatile private var onAsyncError: ((String) -> Unit)? = null
+  private val errorHandler = CoroutineExceptionHandler { _, throwable ->
+    onAsyncError?.invoke(throwable.message ?: "Acoustic modem coroutine error")
+  }
+  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + errorHandler)
 
   @Volatile private var rxJob: Job? = null
   @Volatile private var sirenJob: Job? = null
@@ -59,10 +68,11 @@ class UltrasonicModem(
   @Volatile private var thresholdMag: Double = 0.0075
   @Volatile private var noiseFloorDb: Double = -52.0
 
-  private var calibrating = false
+  @Volatile private var calibrating = false
+  private val calibrationLock = Any()
   private val calibrationSamples = mutableListOf<Double>()
-  private var calibrationEndMs = 0L
-  private var onCalibrationDone: ((Double, Double) -> Unit)? = null
+  @Volatile private var calibrationEndMs = 0L
+  @Volatile private var onCalibrationDone: ((Double, Double) -> Unit)? = null
 
   fun isListening(): Boolean = rxJob?.isActive == true
   fun isSirenPlaying(): Boolean = sirenJob?.isActive == true
@@ -81,13 +91,25 @@ class UltrasonicModem(
     val pcm = synthesizeFskPcm(framed, cfg)
 
     val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-    val prevVolume = audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: -1
-    val maxVolume = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: -1
+    val prevVolume = try {
+      audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: -1
+    } catch (_: Throwable) {
+      -1
+    }
+    val maxVolume = try {
+      audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: -1
+    } catch (_: Throwable) {
+      -1
+    }
 
     var track: AudioTrack? = null
     return try {
       if (audioManager != null && maxVolume > 0) {
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume, 0)
+        try {
+          audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume, 0)
+        } catch (_: Throwable) {
+          // DND SecurityException or OEM volume restriction: continue at current volume.
+        }
       }
 
       val byteLen = pcm.size * 2
@@ -166,10 +188,12 @@ class UltrasonicModem(
 
   /** Runs a 3-second ambient noise-floor calibration while the receiver is listening. */
   fun triggerNoiseCalibration(durationMs: Long = 3000L, onComplete: (Double, Double) -> Unit) {
-    calibrationSamples.clear()
-    calibrationEndMs = System.currentTimeMillis() + durationMs
-    onCalibrationDone = onComplete
-    calibrating = true
+    synchronized(calibrationLock) {
+      calibrationSamples.clear()
+      calibrationEndMs = System.currentTimeMillis() + durationMs
+      onCalibrationDone = onComplete
+      calibrating = true
+    }
   }
 
   @SuppressLint("MissingPermission")
@@ -178,13 +202,24 @@ class UltrasonicModem(
     onPacketDecoded: (ByteArray, Double) -> Unit,
     onError: (String) -> Unit,
   ) {
+    onAsyncError = onError
     if (rxJob?.isActive == true) return
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+      onError("RECORD_AUDIO permission not granted")
+      return
+    }
+
     val cfg = config
-    val minBuf = AudioRecord.getMinBufferSize(
-      cfg.sampleRate,
-      AudioFormat.CHANNEL_IN_MONO,
-      AudioFormat.ENCODING_PCM_16BIT,
-    )
+    val minBuf = try {
+      AudioRecord.getMinBufferSize(
+        cfg.sampleRate,
+        AudioFormat.CHANNEL_IN_MONO,
+        AudioFormat.ENCODING_PCM_16BIT,
+      )
+    } catch (t: Throwable) {
+      onError(t.message ?: "AudioRecord unavailable")
+      return
+    }
     if (minBuf <= 0) {
       onError("AudioRecord not supported at ${cfg.sampleRate} Hz")
       return
@@ -250,19 +285,30 @@ class UltrasonicModem(
           val activeEnergy = max(spaceEnergy, markEnergy)
 
           if (calibrating) {
-            calibrationSamples.add(activeEnergy)
-            if (System.currentTimeMillis() >= calibrationEndMs) {
-              calibrating = false
-              val mean = if (calibrationSamples.isEmpty()) 0.002 else calibrationSamples.average()
-              val variance = calibrationSamples.map { (it - mean) * (it - mean) }.average()
-              val stdDev = sqrt(variance)
-              noiseFloorMag = max(mean, 1e-5)
-              thresholdMag = max(mean + 3.5 * stdDev, mean * 2.2)
-              noiseFloorDb = Radix2FFT.magnitudeToDb(noiseFloorMag)
-              val thresholdDb = Radix2FFT.magnitudeToDb(thresholdMag)
-              onCalibrationDone?.invoke(noiseFloorDb, thresholdDb)
-              onCalibrationDone = null
+            var completedCallback: ((Double, Double) -> Unit)? = null
+            var completedFloorDb = noiseFloorDb
+            var completedThresholdDb = noiseFloorDb
+            synchronized(calibrationLock) {
+              if (calibrating) {
+                calibrationSamples.add(activeEnergy)
+                if (System.currentTimeMillis() >= calibrationEndMs) {
+                  calibrating = false
+                  val snapshot = calibrationSamples.toList()
+                  calibrationSamples.clear()
+                  val mean = if (snapshot.isEmpty()) 0.002 else snapshot.average()
+                  val variance = if (snapshot.isEmpty()) 0.0 else snapshot.map { (it - mean) * (it - mean) }.average()
+                  val stdDev = sqrt(variance)
+                  noiseFloorMag = max(mean, 1e-5)
+                  thresholdMag = max(mean + 3.5 * stdDev, mean * 2.2)
+                  noiseFloorDb = Radix2FFT.magnitudeToDb(noiseFloorMag)
+                  completedFloorDb = noiseFloorDb
+                  completedThresholdDb = Radix2FFT.magnitudeToDb(thresholdMag)
+                  completedCallback = onCalibrationDone
+                  onCalibrationDone = null
+                }
+              }
             }
+            completedCallback?.invoke(completedFloorDb, completedThresholdDb)
           }
 
           val nowMs = System.currentTimeMillis()
@@ -327,6 +373,9 @@ class UltrasonicModem(
       } finally {
         try {
           recorder?.stop()
+        } catch (_: Throwable) {
+        }
+        try {
           recorder?.release()
         } catch (_: Throwable) {
         }
@@ -358,9 +407,13 @@ class UltrasonicModem(
 
     sirenJob = scope.launch {
       val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-      val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: -1
-      if (audioManager != null && maxVol > 0) {
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
+      try {
+        val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: -1
+        if (audioManager != null && maxVol > 0) {
+          audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
+        }
+      } catch (_: Throwable) {
+        // DND SecurityException or OEM restriction: continue siren at current volume.
       }
 
       var track: AudioTrack? = null
@@ -392,9 +445,14 @@ class UltrasonicModem(
         while (isActive) {
           track.write(cyclePcm, 0, cyclePcm.size)
         }
+      } catch (t: Throwable) {
+        onAsyncError?.invoke(t.message ?: "Rescue siren audio error")
       } finally {
         try {
           track?.stop()
+        } catch (_: Throwable) {
+        }
+        try {
           track?.release()
         } catch (_: Throwable) {
         }
@@ -410,6 +468,7 @@ class UltrasonicModem(
   fun release() {
     stopListening()
     stopSiren()
+    scope.cancel()
   }
 
   private fun bandPeak(mags: DoubleArray, centerBin: Int, radius: Int): Double {

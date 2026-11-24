@@ -5,11 +5,15 @@ import {
   SMPV1_MAGIC_VER,
   SMPV1_PACKET_SIZE,
   PacketDeduplicator,
+  base64ToBytes,
+  bytesToBase64,
   crc16CcittFalse,
   decodeSmpV1,
   encodeSmpV1,
   frameForAcoustic,
   prepareRelayPacket,
+  utf8Decode,
+  utf8Encode,
   type SmpV1Packet,
 } from "./smpv1";
 import {
@@ -143,5 +147,63 @@ describe("SMPv1 56-byte binary protocol", () => {
 
     expect(estimateDistanceFromRssi(-59)).toBeCloseTo(1.0, 1);
     expect(estimateDistanceFromRssi(-83)).toBeGreaterThan(estimateDistanceFromRssi(-65));
+  });
+
+  it("encodes and decodes Base64 and UTF-8 in pure JS without btoa/atob/TextEncoder/TextDecoder", () => {
+    const g = globalThis as Record<string, unknown>;
+    const origBtoa = g.btoa;
+    const origAtob = g.atob;
+    const origTextEncoder = g.TextEncoder;
+    const origTextDecoder = g.TextDecoder;
+
+    try {
+      g.btoa = undefined;
+      g.atob = undefined;
+      g.TextEncoder = undefined;
+      g.TextDecoder = undefined;
+
+      // Empty and 1..5 byte lengths + full 56B SMPv1 packet
+      for (const sample of [
+        new Uint8Array(0),
+        new Uint8Array([0x00]),
+        new Uint8Array([0x51, 0xff]),
+        new Uint8Array([0x01, 0x02, 0x03]),
+        new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]),
+        new Uint8Array([0x10, 0x20, 0x30, 0x40, 0x50]),
+      ]) {
+        const b64 = bytesToBase64(sample);
+        expect(Array.from(base64ToBytes(b64))).toEqual(Array.from(sample));
+      }
+
+      // Whitespace tolerance & unpadded input
+      expect(Array.from(base64ToBytes(" SGVs\n bG8 "))).toEqual([72, 101, 108, 108, 111]);
+      expect(() => base64ToBytes("A")).toThrow();
+      expect(() => base64ToBytes("AB$D")).toThrow();
+
+      // UTF-8 multi-byte characters (1B ASCII, 2B Latin, 3B Euro/CJK, 4B Emoji)
+      for (const text of ["SOS", "café", "€中", "🆘OK"]) {
+        const encoded = utf8Encode(text);
+        expect(utf8Decode(encoded)).toBe(text);
+      }
+
+      // 9-byte truncation of multi-byte payload must not throw on decode
+      const pkt = makeSamplePacket({ shortPayload: "🆘🆘🆘" }); // 12 UTF-8 bytes -> sliced to 9
+      const raw = encodeSmpV1(pkt);
+      const b64 = bytesToBase64(raw);
+      const roundtripBytes = base64ToBytes(b64);
+      expect(Array.from(roundtripBytes)).toEqual(Array.from(raw));
+
+      const decoded = decodeSmpV1(roundtripBytes);
+      expect(decoded.ok).toBe(true);
+      if (decoded.ok) {
+        expect(decoded.packet.shortPayload.startsWith("🆘🆘")).toBe(true);
+        expect(decoded.packet.shortPayload).toContain("\uFFFD");
+      }
+    } finally {
+      g.btoa = origBtoa;
+      g.atob = origAtob;
+      g.TextEncoder = origTextEncoder;
+      g.TextDecoder = origTextDecoder;
+    }
   });
 });

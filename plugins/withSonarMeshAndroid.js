@@ -1,13 +1,43 @@
-const { withAndroidManifest } = require("@expo/config-plugins");
+const {
+  AndroidConfig,
+  withAndroidColors,
+  withAndroidManifest,
+  withAndroidStyles,
+} = require("@expo/config-plugins");
 
 /**
  * Expo Config Plugin for SonarMesh (SolarPUSH).
- * Registers hardware features (BLE, microphone, accelerometer), ForegroundService
- * with connectedDevice + microphone types, and BLE PendingIntent BroadcastReceiver.
+ * - Adds legacy API<=30 BLUETOOTH / BLUETOOTH_ADMIN permissions with maxSdkVersion=30.
+ * - Registers hardware features (BLE, microphone, accelerometer), ForegroundService
+ *   with connectedDevice + microphone types, and BLE PendingIntent BroadcastReceiver.
+ * - Configures light-theme Android native colors and Theme.EdgeToEdge.Light styles.
  */
-function withSonarMeshAndroid(config) {
+function withSonarMeshManifest(config) {
   return withAndroidManifest(config, (modConfig) => {
     const manifest = modConfig.modResults.manifest;
+
+    if (!manifest["uses-permission"]) {
+      manifest["uses-permission"] = [];
+    }
+    const legacyBtPermissions = [
+      { name: "android.permission.BLUETOOTH", maxSdkVersion: "30" },
+      { name: "android.permission.BLUETOOTH_ADMIN", maxSdkVersion: "30" },
+    ];
+    for (const perm of legacyBtPermissions) {
+      const existing = manifest["uses-permission"].find(
+        (entry) => entry.$?.["android:name"] === perm.name
+      );
+      if (existing) {
+        existing.$["android:maxSdkVersion"] = perm.maxSdkVersion;
+      } else {
+        manifest["uses-permission"].push({
+          $: {
+            "android:name": perm.name,
+            "android:maxSdkVersion": perm.maxSdkVersion,
+          },
+        });
+      }
+    }
 
     if (!manifest["uses-feature"]) {
       manifest["uses-feature"] = [];
@@ -66,6 +96,78 @@ function withSonarMeshAndroid(config) {
 
     return modConfig;
   });
+}
+
+function withSonarMeshLightColors(config) {
+  return withAndroidColors(config, (modConfig) => {
+    let xml = modConfig.modResults;
+    xml = AndroidConfig.Colors.assignColorValue(xml, {
+      name: "colorPrimary",
+      value: "#0D9488",
+    });
+    xml = AndroidConfig.Colors.assignColorValue(xml, {
+      name: "colorPrimaryDark",
+      value: "#F7F9FC",
+    });
+    xml = AndroidConfig.Colors.assignColorValue(xml, {
+      name: "splashscreen_background",
+      value: "#F7F9FC",
+    });
+    xml = AndroidConfig.Colors.assignColorValue(xml, {
+      name: "activityBackground",
+      value: "#F7F9FC",
+    });
+    modConfig.modResults = xml;
+    return modConfig;
+  });
+}
+
+function withSonarMeshLightStyles(config) {
+  return withAndroidStyles(config, (modConfig) => {
+    const styles = modConfig.modResults?.resources?.style;
+    if (Array.isArray(styles)) {
+      const appTheme = styles.find((s) => s.$?.name === "AppTheme");
+      if (appTheme) {
+        appTheme.$.parent = "Theme.EdgeToEdge.Light";
+        const deprecatedNames = new Set([
+          "android:statusBarColor",
+          "android:navigationBarColor",
+        ]);
+        appTheme.item = (appTheme.item ?? []).filter(
+          (item) => !deprecatedNames.has(item.$?.name)
+        );
+      }
+    }
+
+    modConfig.modResults = AndroidConfig.Styles.assignStylesValue(
+      modConfig.modResults,
+      {
+        add: true,
+        parent: { name: "AppTheme", parent: "Theme.EdgeToEdge.Light" },
+        name: "android:windowLightStatusBar",
+        value: "true",
+      }
+    );
+
+    modConfig.modResults = AndroidConfig.Styles.assignStylesValue(
+      modConfig.modResults,
+      {
+        add: true,
+        parent: { name: "AppTheme", parent: "Theme.EdgeToEdge.Light" },
+        name: "android:windowBackground",
+        value: "@color/activityBackground",
+      }
+    );
+
+    return modConfig;
+  });
+}
+
+function withSonarMeshAndroid(config) {
+  config = withSonarMeshManifest(config);
+  config = withSonarMeshLightColors(config);
+  config = withSonarMeshLightStyles(config);
+  return config;
 }
 
 module.exports = withSonarMeshAndroid;

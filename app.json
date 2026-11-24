@@ -4,14 +4,15 @@
     "slug": "solarpush-sonarmesh",
     "version": "0.1.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "dark",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#F7F9FC",
     "newArchEnabled": true,
     "android": {
       "package": "com.aryakhaslana.solarpush",
       "versionCode": 1,
       "edgeToEdgeEnabled": true,
       "adaptiveIcon": {
-        "backgroundColor": "#0B0E11"
+        "backgroundColor": "#F7F9FC"
       },
       "permissions": [
         "android.permission.BLUETOOTH_SCAN",

@@ -62,6 +62,12 @@ export class SonarMeshBridge {
     return this.isNative;
   }
 
+  private reportError(err: unknown, fallback: string) {
+    const msg = err instanceof Error && err.message ? err.message : fallback;
+    console.warn("[SonarMeshBridge]", msg);
+    this.cb?.onError(msg);
+  }
+
   attach(callbacks: BridgeCallbacks) {
     this.detach();
     this.cb = callbacks;
@@ -69,18 +75,21 @@ export class SonarMeshBridge {
     if (this.isNative) {
       const emitter = createNativeEventEmitter();
       if (!emitter) return;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const em = emitter as any;
-      this.subs = [
-        em.addListener("onPacketReceived", (ev: NativePacketEvent) => callbacks.onPacket(ev)),
-        em.addListener("onSpectrumFrame", (frame: NativeSpectrumFrame) => callbacks.onSpectrum(frame)),
-        em.addListener("onCalibrationResult", (res: NativeCalibrationResult) => callbacks.onCalibration(res)),
-        em.addListener("onImpactDetected", (ev: NativeImpactEvent) => callbacks.onImpact(ev)),
-        em.addListener("onSensorTelemetry", (snap: NativeSensorTelemetry) => callbacks.onSensors(snap)),
-        em.addListener("onNativeError", (e: { message?: string }) =>
-          callbacks.onError(e?.message || "Native hardware error")
-        ),
-      ];
+      try {
+        this.subs = [
+          emitter.addListener("onPacketReceived", (ev) => callbacks.onPacket(ev)),
+          emitter.addListener("onSpectrumFrame", (frame) => callbacks.onSpectrum(frame)),
+          emitter.addListener("onCalibrationResult", (res) => callbacks.onCalibration(res)),
+          emitter.addListener("onImpactDetected", (ev) => callbacks.onImpact(ev)),
+          emitter.addListener("onSensorTelemetry", (snap) => callbacks.onSensors(snap)),
+          emitter.addListener("onNativeError", (e) =>
+            callbacks.onError(e?.message || "Native hardware error")
+          ),
+        ];
+      } catch (err) {
+        this.subs = [];
+        this.reportError(err, "Failed to attach native listeners");
+      }
     }
   }
 
@@ -98,15 +107,26 @@ export class SonarMeshBridge {
     this.cb = null;
   }
 
-  async startMesh(mode: "RADAR" | "SOS", lowLatency: boolean, settings: SonarMeshSettings) {
+  async startMesh(
+    mode: "RADAR" | "SOS",
+    lowLatency: boolean,
+    settings: SonarMeshSettings
+  ): Promise<boolean> {
     this.simSettings = settings;
     if (this.isNative && SonarMeshNative) {
-      await SonarMeshNative.updateSensorConfig(
-        settings.impactThresholdMs2,
-        settings.pocketLuxThreshold
-      );
-      await SonarMeshNative.startMeshService(mode, lowLatency);
-      return;
+      try {
+        if (typeof SonarMeshNative.updateSensorConfig === "function") {
+          await SonarMeshNative.updateSensorConfig(
+            settings.impactThresholdMs2,
+            settings.pocketLuxThreshold
+          );
+        }
+        const res = await SonarMeshNative.startMeshService(mode, lowLatency);
+        return Boolean(res?.running);
+      } catch (err) {
+        this.reportError(err, "Failed to start mesh service");
+        return false;
+      }
     }
     this.cb?.onSensors({
       accelMagnitudeMs2: this.simAccelMs2,
@@ -114,42 +134,64 @@ export class SonarMeshBridge {
       isPocketBag: this.simPocketBag,
       headingDeg: this.simHeading,
     });
+    return true;
   }
 
-  async stopMesh() {
+  async stopMesh(): Promise<void> {
     if (this.isNative && SonarMeshNative) {
-      await SonarMeshNative.stopMeshService();
+      try {
+        await SonarMeshNative.stopMeshService();
+      } catch (err) {
+        this.reportError(err, "Failed to stop mesh service");
+      }
       return;
     }
     this.stopSimSpectrum();
     this.stopSimSiren();
   }
 
-  async startAcousticListen(settings: SonarMeshSettings) {
+  async startAcousticListen(settings: SonarMeshSettings): Promise<boolean> {
     this.simSettings = settings;
     if (this.isNative && SonarMeshNative) {
-      await SonarMeshNative.startAcousticListen(
-        settings.freqSpace0Hz,
-        settings.freqMark1Hz,
-        settings.symbolDurationMs
-      );
-      return;
+      try {
+        const res = await SonarMeshNative.startAcousticListen(
+          settings.freqSpace0Hz,
+          settings.freqMark1Hz,
+          settings.symbolDurationMs
+        );
+        return res?.listening !== false;
+      } catch (err) {
+        this.reportError(err, "Failed to start acoustic receiver");
+        return false;
+      }
     }
     this.startSimSpectrum(settings);
+    return true;
   }
 
-  async stopAcousticListen() {
+  async stopAcousticListen(): Promise<void> {
     if (this.isNative && SonarMeshNative) {
-      await SonarMeshNative.stopAcousticListen();
+      try {
+        await SonarMeshNative.stopAcousticListen();
+      } catch (err) {
+        this.reportError(err, "Failed to stop acoustic receiver");
+      }
       return;
     }
     this.stopSimSpectrum();
   }
 
-  async calibrateNoiseFloor(durationMs = SONARMESH_CONSTANTS.CALIBRATION_DURATION_MS) {
+  async calibrateNoiseFloor(
+    durationMs = SONARMESH_CONSTANTS.CALIBRATION_DURATION_MS
+  ): Promise<boolean> {
     if (this.isNative && SonarMeshNative) {
-      await SonarMeshNative.calibrateNoiseFloor(durationMs);
-      return;
+      try {
+        const res = await SonarMeshNative.calibrateNoiseFloor(durationMs);
+        return res?.started !== false;
+      } catch (err) {
+        this.reportError(err, "Failed to calibrate noise floor");
+        return false;
+      }
     }
     setTimeout(() => {
       const floor = Math.round((-56 + Math.random() * 6) * 10) / 10;
@@ -159,38 +201,61 @@ export class SonarMeshBridge {
         thresholdDb: Math.round((floor + 11.5) * 10) / 10,
       });
     }, durationMs);
+    return true;
   }
 
-  async transmitUltrasonic(raw56: Uint8Array): Promise<void> {
+  async transmitUltrasonic(raw56: Uint8Array): Promise<boolean> {
     const b64 = bytesToBase64(raw56);
     if (this.isNative && SonarMeshNative) {
-      await SonarMeshNative.transmitUltrasonic(b64);
-      return;
+      try {
+        const res = await SonarMeshNative.transmitUltrasonic(b64);
+        return res?.transmitted !== false;
+      } catch (err) {
+        this.reportError(err, "Ultrasonic transmission failed");
+        return false;
+      }
     }
     this.simActiveTxUntilMs = Date.now() + 2600;
     this.playWebUltrasonicPreview();
+    return true;
   }
 
-  async broadcastBle(raw56: Uint8Array, durationMs = 3500): Promise<void> {
+  async broadcastBle(raw56: Uint8Array, durationMs = 3500): Promise<boolean> {
     const b64 = bytesToBase64(raw56);
     if (this.isNative && SonarMeshNative) {
-      await SonarMeshNative.broadcastBlePacket(b64, durationMs);
-      return;
+      try {
+        const res = await SonarMeshNative.broadcastBlePacket(b64, durationMs);
+        return res?.broadcasting !== false;
+      } catch (err) {
+        this.reportError(err, "BLE broadcast failed");
+        return false;
+      }
     }
     // Software preview mode: no external BLE radio.
+    return true;
   }
 
-  async startSiren(): Promise<void> {
+  async startSiren(): Promise<boolean> {
     if (this.isNative && SonarMeshNative) {
-      await SonarMeshNative.startSiren();
-      return;
+      try {
+        const res = await SonarMeshNative.startSiren();
+        return res?.playing !== false;
+      } catch (err) {
+        this.reportError(err, "Failed to start rescue siren");
+        return false;
+      }
     }
     this.startSimSiren();
+    return true;
   }
 
   async stopSiren(): Promise<void> {
     if (this.isNative && SonarMeshNative) {
-      await SonarMeshNative.stopSiren();
+      try {
+        await SonarMeshNative.stopSiren();
+      } catch (err) {
+        this.reportError(err, "Failed to stop rescue siren");
+      }
       return;
     }
     this.stopSimSiren();
@@ -199,19 +264,79 @@ export class SonarMeshBridge {
   async updateSensorConfig(settings: SonarMeshSettings): Promise<void> {
     this.simSettings = settings;
     if (this.isNative && SonarMeshNative) {
-      await SonarMeshNative.updateSensorConfig(
-        settings.impactThresholdMs2,
-        settings.pocketLuxThreshold
-      );
+      try {
+        await SonarMeshNative.updateSensorConfig(
+          settings.impactThresholdMs2,
+          settings.pocketLuxThreshold
+        );
+      } catch (err) {
+        this.reportError(err, "Failed to update sensor thresholds");
+      }
     }
+  }
+
+  async isIgnoringBatteryOptimizations(): Promise<boolean> {
+    if (this.isNative && SonarMeshNative) {
+      if (typeof SonarMeshNative.isIgnoringBatteryOptimizations !== "function") {
+        return false;
+      }
+      try {
+        const res = await SonarMeshNative.isIgnoringBatteryOptimizations();
+        return typeof res === "boolean"
+          ? res
+          : Boolean((res as { ignoring?: boolean } | null)?.ignoring);
+      } catch (err) {
+        this.reportError(err, "Failed to check battery optimization status");
+        return false;
+      }
+    }
+    return true;
   }
 
   async requestIgnoreBatteryOptimizations(): Promise<boolean> {
     if (this.isNative && SonarMeshNative) {
-      const res = await SonarMeshNative.requestIgnoreBatteryOptimizations();
-      return res.ignoring;
+      try {
+        const res = await SonarMeshNative.requestIgnoreBatteryOptimizations();
+        return Boolean(res?.ignoring);
+      } catch (err) {
+        this.reportError(err, "Failed to request battery optimization exemption");
+        return false;
+      }
     }
     return true;
+  }
+
+  async getDeviceTelemetry(): Promise<{
+    batteryPct: number;
+    airplaneMode: boolean;
+    serviceRunning: boolean;
+    relayedCount: number;
+    acousticListening: boolean;
+    sirenPlaying: boolean;
+  }> {
+    if (this.isNative && SonarMeshNative && typeof SonarMeshNative.getDeviceTelemetry === "function") {
+      try {
+        const t = await SonarMeshNative.getDeviceTelemetry();
+        return {
+          batteryPct: typeof t?.batteryPct === "number" ? t.batteryPct : 100,
+          airplaneMode: Boolean(t?.airplaneMode),
+          serviceRunning: Boolean(t?.serviceRunning),
+          relayedCount: typeof t?.relayedCount === "number" ? t.relayedCount : 0,
+          acousticListening: Boolean(t?.acousticListening),
+          sirenPlaying: Boolean(t?.sirenPlaying),
+        };
+      } catch (err) {
+        this.reportError(err, "Failed to read device telemetry");
+      }
+    }
+    return {
+      batteryPct: 86,
+      airplaneMode: false,
+      serviceRunning: false,
+      relayedCount: 0,
+      acousticListening: false,
+      sirenPlaying: false,
+    };
   }
 
   // Interactive test helpers (also usable on Android for field bench testing)

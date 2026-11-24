@@ -11,7 +11,7 @@ import {
 } from "@/protocol/geo";
 import type { TriggerType } from "@/protocol/smpv1";
 import type { StoredSosRecord } from "@/storage/packetStore";
-import { COLORS } from "@/theme/tokens";
+import { CARD_SHADOW, COLORS, FONTS } from "@/theme/tokens";
 
 interface SosPacketRowProps {
   record: StoredSosRecord;
@@ -106,14 +106,15 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 14,
     marginBottom: 10,
     gap: 10,
+    ...CARD_SHADOW,
   },
   cardSelected: {
     borderColor: COLORS.sonar,
-    backgroundColor: COLORS.surfaceElevated,
+    backgroundColor: COLORS.sonarSoft,
   },
   topRow: {
     flexDirection: "row",
@@ -125,11 +126,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   noteText: {
+    fontFamily: FONTS.sansMedium,
     color: COLORS.text,
     fontSize: 15,
     fontWeight: "700",
   },
   ageSub: {
+    fontFamily: FONTS.sans,
     color: COLORS.muted,
     fontSize: 12,
     marginTop: 2,
@@ -138,13 +141,15 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
   },
   distValue: {
+    fontFamily: FONTS.sansMedium,
     color: COLORS.text,
     fontSize: 16,
     fontWeight: "700",
     fontVariant: ["tabular-nums"],
   },
   dirLabel: {
-    color: COLORS.sonar,
+    fontFamily: FONTS.sansMedium,
+    color: COLORS.sonarDark,
     fontSize: 11,
     fontWeight: "600",
     marginTop: 1,
@@ -162,13 +167,14 @@ const styles = StyleSheet.create({
   badgeSos: { backgroundColor: COLORS.sosSoft },
   badgeSonar: { backgroundColor: COLORS.sonarSoft },
   badgeAmber: { backgroundColor: COLORS.amberSoft },
-  badgeNeutral: { backgroundColor: COLORS.surfaceElevated },
+  badgeNeutral: { backgroundColor: COLORS.surfaceSubtle },
   badgeText: {
+    fontFamily: FONTS.sansMedium,
     fontSize: 11,
     fontWeight: "600",
   },
   textSos: { color: COLORS.sos },
-  textSonar: { color: COLORS.sonar },
+  textSonar: { color: COLORS.sonarDark },
   textAmber: { color: COLORS.amber },
   textMuted: { color: COLORS.muted },
   bottomRow: {
@@ -179,6 +185,7 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
   metaText: {
+    fontFamily: FONTS.sans,
     color: COLORS.muted,
     fontSize: 11,
     fontVariant: ["tabular-nums"],
