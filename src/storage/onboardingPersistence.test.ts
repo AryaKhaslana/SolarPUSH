@@ -8,6 +8,10 @@ vi.mock("react-native", () => ({
   },
 }));
 
+vi.mock("expo-sqlite", () => ({
+  openDatabaseAsync: vi.fn(),
+}));
+
 describe("Onboarding completion & startup persistence", () => {
   it("defaults onboardingCompleted to false on first launch and persists true after completion", async () => {
     const store = new OfflinePacketStore();

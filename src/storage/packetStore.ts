@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { openSqliteDatabase, type SqliteDbLike } from "./sqliteDriver";
 import {
   DEFAULT_SONARMESH_SETTINGS,
   type SonarMeshSettings,
@@ -34,13 +35,6 @@ export interface PersistedDeviceState {
 
 const WEB_PACKETS_KEY = "sonarmesh_packets_v1";
 const WEB_STATE_KEY = "sonarmesh_state_v1";
-
-interface SqliteDbLike {
-  execAsync(sql: string): Promise<void>;
-  runAsync(sql: string, ...params: unknown[]): Promise<unknown>;
-  getAllAsync<T>(sql: string, ...params: unknown[]): Promise<T[]>;
-  getFirstAsync<T>(sql: string, ...params: unknown[]): Promise<T | null>;
-}
 
 function createDefaultDeviceState(): PersistedDeviceState {
   return {
@@ -131,9 +125,9 @@ export class OfflinePacketStore {
     this.initPromise = (async () => {
       if (Platform.OS !== "web") {
         try {
-          const SQLite = await import("expo-sqlite");
-          const db = (await SQLite.openDatabaseAsync("sonarmesh.db")) as unknown as SqliteDbLike;
-          await db.execAsync(`
+          const db = await openSqliteDatabase("sonarmesh.db");
+          if (db) {
+            await db.execAsync(`
             PRAGMA journal_mode = WAL;
             CREATE TABLE IF NOT EXISTS sos_packets (
               packet_id TEXT PRIMARY KEY,
@@ -152,8 +146,12 @@ export class OfflinePacketStore {
               value TEXT NOT NULL
             );
           `);
-          this.sqliteDb = db;
-          this.usingMemoryFallback = false;
+            this.sqliteDb = db;
+            this.usingMemoryFallback = false;
+          } else {
+            this.sqliteDb = null;
+            this.usingMemoryFallback = true;
+          }
         } catch (err) {
           console.warn(
             "[OfflinePacketStore] SQLite unavailable, using in-memory fallback:",

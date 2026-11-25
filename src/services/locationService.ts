@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import * as Location from "expo-location";
 
 export interface OfflineSafeLocation {
   lat: number;
@@ -54,7 +55,6 @@ export async function getCurrentLocation(
   }
 
   try {
-    const Location = await import("expo-location");
     const perm = await Location.getForegroundPermissionsAsync();
     if (!perm || perm.status !== "granted") {
       return makeFallback(fallback);
